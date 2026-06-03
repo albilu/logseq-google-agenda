@@ -12,7 +12,6 @@ Read-only Google Calendar and journal task month view for Logseq using public or
 - Open or focus the plugin panel from the command palette or `Ctrl+Shift+G` / `Cmd+Shift+G`, and close it from the panel close control.
 - Refresh from the toolbar or the command palette.
 - Refresh automatically on the configured interval and keep the last snapshot cached locally.
-- Export imported events into Logseq journal pages under a `Google Agenda` block during refresh.
 - No OAuth flow, event editing, or calendar CRUD support.
 
 ## Screenshot
@@ -40,15 +39,15 @@ Example `Calendar feeds` value:
 
 ```json
 [
-  {
-    "url": "https://calendar.google.com/calendar/ical/.../basic.ics",
-    "calendarName": "Team",
-    "color": "#3b82f6"
-  },
-  {
-    "url": "https://calendar.google.com/calendar/ical/.../private-abcdef/basic.ics",
-    "calendarName": "Personal"
-  }
+	{
+		"url": "https://calendar.google.com/calendar/ical/.../basic.ics",
+		"calendarName": "Team",
+		"color": "#3b82f6"
+	},
+	{
+		"url": "https://calendar.google.com/calendar/ical/.../private-abcdef/basic.ics",
+		"calendarName": "Personal"
+	}
 ]
 ```
 
