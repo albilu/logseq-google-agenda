@@ -1,0 +1,11 @@
+{
+  "title": "Google Agenda",
+  "description": "Read-only Google Calendar and journal task month view using public or private iCal URLs.",
+  "author": "albilu",
+  "repo": "albilu/logseq-google-agenda",
+  "icon": "./icon.svg",
+  "theme": false,
+  "effect": false,
+  "supportsDB": false,
+  "supportsDBOnly": false
+}
