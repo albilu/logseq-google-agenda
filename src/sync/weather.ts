@@ -22,6 +22,10 @@ type GeocodingResponse = {
 type GeocodingResult = NonNullable<GeocodingResponse['results']>[number];
 
 type ForecastResponse = {
+  current?: {
+    time?: string;
+    temperature_2m?: number;
+  };
   daily?: {
     time?: string[];
     weather_code?: number[];
@@ -85,10 +89,20 @@ function getTemperatureSuffix(locale: string): 'F' | 'C' {
   return locale === 'en-US' ? 'F' : 'C';
 }
 
-function formatTemperatureDisplay(temperatureMax: number, temperatureMin: number, locale: string): string {
+function formatTemperatureDisplay(
+  temperatureMax: number,
+  temperatureMin: number,
+  locale: string,
+  currentTemperature?: number | null,
+): string {
   const suffix = getTemperatureSuffix(locale);
+  const maxMin = `${temperatureMax}${suffix} / ${temperatureMin}${suffix}`;
 
-  return `${temperatureMax}${suffix} / ${temperatureMin}${suffix}`;
+  if (currentTemperature != null) {
+    return `${currentTemperature}${suffix} (${maxMin})`;
+  }
+
+  return maxMin;
 }
 
 function getGeocodingQuery(city: string): string {
@@ -128,7 +142,12 @@ function getWeatherCodeDetails(conditionCode: number): Pick<WeatherDay, 'conditi
   };
 }
 
-function normalizeWeatherDays(forecast: ForecastResponse, locale: string): WeatherDay[] {
+function normalizeWeatherDays(
+  forecast: ForecastResponse,
+  locale: string,
+  todayDateStr: string | null = null,
+  currentTemperature: number | null = null,
+): WeatherDay[] {
   const daily = forecast.daily;
 
   if (!daily) {
@@ -159,7 +178,12 @@ function normalizeWeatherDays(forecast: ForecastResponse, locale: string): Weath
       date,
       temperatureMin,
       temperatureMax,
-      temperatureDisplay: formatTemperatureDisplay(temperatureMax, temperatureMin, locale),
+      temperatureDisplay: formatTemperatureDisplay(
+        temperatureMax,
+        temperatureMin,
+        locale,
+        date === todayDateStr ? currentTemperature : null,
+      ),
       conditionCode,
       conditionLabel,
       precipitationChance: isNumber(precipitationChance) ? precipitationChance : 0,
@@ -223,6 +247,7 @@ export async function refreshWeather({
   forecastUrl.searchParams.set('timezone', 'auto');
   forecastUrl.searchParams.set('forecast_days', '8');
   forecastUrl.searchParams.set('temperature_unit', getTemperatureUnit(locale));
+  forecastUrl.searchParams.set('current', 'temperature_2m');
   forecastUrl.searchParams.set(
     'daily',
     'weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max',
@@ -238,7 +263,15 @@ export async function refreshWeather({
     return createEmptyResult();
   }
 
-  const weather = normalizeWeatherDays(forecastPayload, locale);
+  const currentBlock = forecastPayload.current;
+  const rawCurrentTemp = currentBlock?.temperature_2m;
+  const currentTemperature = isNumber(rawCurrentTemp) ? Math.round(rawCurrentTemp) : null;
+  const todayDateStr =
+    typeof currentBlock?.time === 'string' && currentBlock.time.length > 0
+      ? currentBlock.time.split('T')[0] ?? null
+      : null;
+
+  const weather = normalizeWeatherDays(forecastPayload, locale, todayDateStr, currentTemperature);
 
   if (weather.length === 0) {
     console.log('[logseq-google-agenda] Weather forecast normalized to no days', {

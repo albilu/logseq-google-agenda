@@ -156,7 +156,7 @@ describe('refreshWeather', () => {
     );
     expect(fetchImpl).toHaveBeenNthCalledWith(
       2,
-      'https://api.open-meteo.com/v1/forecast?latitude=48.8566&longitude=2.3522&timezone=auto&forecast_days=8&temperature_unit=fahrenheit&daily=weather_code%2Ctemperature_2m_max%2Ctemperature_2m_min%2Cprecipitation_probability_max',
+      'https://api.open-meteo.com/v1/forecast?latitude=48.8566&longitude=2.3522&timezone=auto&forecast_days=8&temperature_unit=fahrenheit&current=temperature_2m&daily=weather_code%2Ctemperature_2m_max%2Ctemperature_2m_min%2Cprecipitation_probability_max',
     );
     expect(result.weatherLocation).toEqual<WeatherLocation>({
       query: 'Paris',
@@ -291,8 +291,107 @@ describe('refreshWeather', () => {
     ]);
     expect(fetchImpl).toHaveBeenNthCalledWith(
       2,
-      'https://api.open-meteo.com/v1/forecast?latitude=48.8566&longitude=2.3522&timezone=auto&forecast_days=8&temperature_unit=celsius&daily=weather_code%2Ctemperature_2m_max%2Ctemperature_2m_min%2Cprecipitation_probability_max',
+      'https://api.open-meteo.com/v1/forecast?latitude=48.8566&longitude=2.3522&timezone=auto&forecast_days=8&temperature_unit=celsius&current=temperature_2m&daily=weather_code%2Ctemperature_2m_max%2Ctemperature_2m_min%2Cprecipitation_probability_max',
     );
+  });
+
+  it('formats today using current temperature with the daily high and low', async () => {
+    const fetchImpl: typeof fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+
+      if (url.startsWith('https://geocoding-api.open-meteo.com/v1/search?')) {
+        return createJsonResponse({
+          results: [
+            {
+              name: 'Paris',
+              latitude: 48.8566,
+              longitude: 2.3522,
+            },
+          ],
+        });
+      }
+
+      return createJsonResponse({
+        current: { time: '2024-05-06T14:00', temperature_2m: 18.7 },
+        daily: {
+          time: ['2024-05-06', '2024-05-07'],
+          weather_code: [0, 1],
+          temperature_2m_max: [22, 24],
+          temperature_2m_min: [12, 14],
+          precipitation_probability_max: [5, 10],
+        },
+      });
+    }) as typeof fetch;
+
+    const result = await refreshWeather({ city: 'Paris', fetchImpl, locale: 'fr-FR' });
+
+    expect(result.weather[0]?.temperatureDisplay).toBe('19C (22C / 12C)');
+    expect(result.weather[1]?.temperatureDisplay).toBe('24C / 14C');
+  });
+
+  it('falls back to max and min when current temperature is absent but current time is present', async () => {
+    const fetchImpl: typeof fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+
+      if (url.startsWith('https://geocoding-api.open-meteo.com/v1/search?')) {
+        return createJsonResponse({
+          results: [
+            {
+              name: 'Paris',
+              latitude: 48.8566,
+              longitude: 2.3522,
+            },
+          ],
+        });
+      }
+
+      return createJsonResponse({
+        current: { time: '2024-05-06T14:00' },
+        daily: {
+          time: ['2024-05-06'],
+          weather_code: [0],
+          temperature_2m_max: [22],
+          temperature_2m_min: [12],
+          precipitation_probability_max: [5],
+        },
+      });
+    }) as typeof fetch;
+
+    const result = await refreshWeather({ city: 'Paris', fetchImpl, locale: 'fr-FR' });
+
+    expect(result.weather[0]?.temperatureDisplay).toBe('22C / 12C');
+  });
+
+  it('falls back to max and min when current data is absent', async () => {
+    const fetchImpl: typeof fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+
+      if (url.startsWith('https://geocoding-api.open-meteo.com/v1/search?')) {
+        return createJsonResponse({
+          results: [
+            {
+              name: 'Paris',
+              latitude: 48.8566,
+              longitude: 2.3522,
+            },
+          ],
+        });
+      }
+
+      return createJsonResponse({
+        daily: {
+          time: ['2024-05-06'],
+          weather_code: [0],
+          temperature_2m_max: [22],
+          temperature_2m_min: [12],
+          precipitation_probability_max: [5],
+        },
+      });
+    }) as typeof fetch;
+
+    const result = await refreshWeather({ city: 'Paris', fetchImpl, locale: 'fr-FR' });
+
+    expect(result.weather[0]?.temperatureDisplay).toBe('22C / 12C');
   });
 
   it('rejects when geocoding returns a non-ok response', async () => {
