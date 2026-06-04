@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { SETTINGS_SCHEMA, parseSettings, type PluginSettings } from './settings';
+import { resolveSupportedLocale } from '../i18n';
+import { SETTINGS_SCHEMA, getSettingsSchema, parseSettings, type PluginSettings } from './settings';
 
 describe('SETTINGS_SCHEMA', () => {
   it('defines the plugin settings fields', () => {
@@ -34,6 +35,140 @@ describe('SETTINGS_SCHEMA', () => {
         default: 60,
       },
     ]);
+  });
+});
+
+describe('getSettingsSchema', () => {
+  it('returns French settings copy for fr locales', () => {
+    expect(getSettingsSchema('fr-FR')).toEqual([
+      {
+        key: 'feeds',
+        type: 'string',
+        title: 'Flux de calendrier',
+        description: "Tableau JSON d'objets de flux avec url, calendarName et color facultatif.",
+        default: '[]',
+      },
+      {
+        key: 'refreshIntervalMinutes',
+        type: 'number',
+        title: 'Intervalle de rafraichissement (minutes)',
+        description: 'Frequence de rafraichissement automatique des flux.',
+        default: 15,
+      },
+      {
+        key: 'weatherCity',
+        type: 'string',
+        title: 'Ville meteo',
+        description: 'Ville, region ou pays a utiliser pour les previsions meteo.',
+        default: '',
+      },
+      {
+        key: 'weatherRefreshIntervalMinutes',
+        type: 'number',
+        title: 'Intervalle de rafraichissement meteo (minutes)',
+        description: 'Frequence de rafraichissement automatique de la meteo.',
+        default: 60,
+      },
+    ]);
+  });
+
+  it('returns German settings copy for de locales', () => {
+    expect(getSettingsSchema('de-DE')).toEqual([
+      {
+        key: 'feeds',
+        type: 'string',
+        title: 'Kalender-Feeds',
+        description: 'JSON-Array von Feed-Objekten mit url, calendarName und optionaler color.',
+        default: '[]',
+      },
+      {
+        key: 'refreshIntervalMinutes',
+        type: 'number',
+        title: 'Aktualisierungsintervall (Minuten)',
+        description: 'Wie oft Feeds automatisch aktualisiert werden sollen.',
+        default: 15,
+      },
+      {
+        key: 'weatherCity',
+        type: 'string',
+        title: 'Wetterort',
+        description: 'Stadt, Region oder Land fuer Wettervorhersagen.',
+        default: '',
+      },
+      {
+        key: 'weatherRefreshIntervalMinutes',
+        type: 'number',
+        title: 'Wetter-Aktualisierungsintervall (Minuten)',
+        description: 'Wie oft das Wetter automatisch aktualisiert werden soll.',
+        default: 60,
+      },
+    ]);
+  });
+
+  it('returns Dutch settings copy for nl locales', () => {
+    expect(getSettingsSchema('nl-NL')).toEqual([
+      {
+        key: 'feeds',
+        type: 'string',
+        title: 'Kalenderfeeds',
+        description: 'JSON-array met feedobjecten met url, calendarName en optionele color.',
+        default: '[]',
+      },
+      {
+        key: 'refreshIntervalMinutes',
+        type: 'number',
+        title: 'Verversingsinterval (minuten)',
+        description: 'Hoe vaak feeds automatisch moeten verversen.',
+        default: 15,
+      },
+      {
+        key: 'weatherCity',
+        type: 'string',
+        title: 'Weerlocatie',
+        description: 'Stad, regio of land voor weersverwachtingen.',
+        default: '',
+      },
+      {
+        key: 'weatherRefreshIntervalMinutes',
+        type: 'number',
+        title: 'Weer verversingsinterval (minuten)',
+        description: 'Hoe vaak het weer automatisch moet verversen.',
+        default: 60,
+      },
+    ]);
+  });
+
+  it('falls back to English settings copy for unsupported locales', () => {
+    expect(getSettingsSchema('es-ES')).toEqual(SETTINGS_SCHEMA);
+  });
+
+  it('supports underscore locale variants in schema generation', () => {
+    expect(getSettingsSchema('de_DE')[2]?.title).toBe('Wetterort');
+    expect(getSettingsSchema('nl_NL')[2]?.title).toBe('Weerlocatie');
+    expect(getSettingsSchema('zh_TW')[0]?.title).toBe('行事曆訂閱');
+  });
+
+  it('maps Simplified and Traditional Chinese locales separately', () => {
+    expect(getSettingsSchema('zh-CN')[0]?.title).toBe('日历订阅');
+    expect(getSettingsSchema('zh-TW')[0]?.title).toBe('行事曆訂閱');
+  });
+});
+
+describe('resolveSupportedLocale', () => {
+  it('maps the required locale matrix to supported locales', () => {
+    expect(resolveSupportedLocale('de')).toBe('de');
+    expect(resolveSupportedLocale('nl')).toBe('nl');
+    expect(resolveSupportedLocale('zh-SG')).toBe('zh-Hans');
+    expect(resolveSupportedLocale('zh-HK')).toBe('zh-Hant');
+    expect(resolveSupportedLocale('zh-MO')).toBe('zh-Hant');
+    expect(resolveSupportedLocale('zh-Hans')).toBe('zh-Hans');
+    expect(resolveSupportedLocale('zh-Hant')).toBe('zh-Hant');
+  });
+
+  it('normalizes underscore locale tags', () => {
+    expect(resolveSupportedLocale('de_DE')).toBe('de');
+    expect(resolveSupportedLocale('nl_NL')).toBe('nl');
+    expect(resolveSupportedLocale('zh_TW')).toBe('zh-Hant');
   });
 });
 

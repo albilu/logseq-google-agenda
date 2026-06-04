@@ -5,6 +5,7 @@ import type { Snapshot } from './sync/cache';
 
 type AgendaAppProps = {
   snapshot?: Snapshot | null;
+  locale?: string;
   isRefreshing?: boolean;
   onRefresh?: () => void;
   onClose?: () => void;
@@ -186,6 +187,67 @@ describe('main wiring', () => {
 
     expect(logseq.hideMainUI).toHaveBeenCalledWith({ restoreEditingCursor: true });
     expect(setMainUiVisible).toHaveBeenCalledWith(false);
+  });
+
+  it('passes Logseq preferredLanguage through to AgendaApp locale on initial load', async () => {
+    createSerializedRefresh.mockReturnValue(vi.fn());
+    vi.mocked(logseq.App.getUserConfigs).mockResolvedValue({
+      preferredDateFormat: 'yyyy-MM-dd',
+      preferredLanguage: 'fr-FR',
+    });
+
+    await loadMain();
+
+    expect(latestAgendaAppProps?.locale).toBe('fr-FR');
+  });
+
+  it('keeps the current locale through settings changes and refreshes it only when the panel open callback runs', async () => {
+    createSerializedRefresh.mockReturnValue(vi.fn());
+    vi.mocked(logseq.App.getUserConfigs).mockResolvedValue({
+      preferredDateFormat: 'yyyy-MM-dd',
+      preferredLanguage: 'fr-FR',
+    });
+
+    await loadMain();
+
+    expect(latestAgendaAppProps?.locale).toBe('fr-FR');
+
+    vi.mocked(logseq.App.getUserConfigs).mockResolvedValue({
+      preferredDateFormat: 'yyyy-MM-dd',
+      preferredLanguage: 'de-DE',
+    });
+
+    const bootOptions = bootPlugin.mock.calls[0][0] as {
+      onSettingsChanged?: unknown;
+      onOpen?: unknown;
+    };
+    const onSettingsChanged = bootOptions.onSettingsChanged;
+
+    expect(onSettingsChanged).toBeTypeOf('function');
+
+    if (typeof onSettingsChanged !== 'function') {
+      throw new TypeError('Expected bootPlugin onSettingsChanged callback');
+    }
+
+    await act(async () => {
+      await onSettingsChanged();
+    });
+
+    expect(latestAgendaAppProps?.locale).toBe('fr-FR');
+
+    const onOpen = bootOptions.onOpen;
+
+    expect(onOpen).toBeTypeOf('function');
+
+    if (typeof onOpen !== 'function') {
+      throw new TypeError('Expected bootPlugin onOpen callback');
+    }
+
+    await act(async () => {
+      await onOpen();
+    });
+
+    expect(latestAgendaAppProps?.locale).toBe('de-DE');
   });
 
   it('uses one shared serialized refresh path across UI, plugin, and interval triggers after rerenders', async () => {
@@ -582,7 +644,7 @@ describe('main wiring', () => {
       await latestAgendaAppProps?.onDateDoubleClick?.(new Date('2026-04-10T12:00:00.000Z'));
     });
 
-    expect(logseq.App.getUserConfigs).toHaveBeenCalledTimes(1);
+    expect(logseq.App.getUserConfigs).toHaveBeenCalledTimes(2);
     expect(logseq.Editor.getPage).toHaveBeenCalledWith('2026-04-10');
     expect(logseq.Editor.openInRightSidebar).toHaveBeenCalledWith('page-1');
     expect(logseq.hideMainUI).toHaveBeenCalledWith({ restoreEditingCursor: true });

@@ -1,7 +1,9 @@
 import '@logseq/libs';
 
+import { createTranslator } from './i18n';
 import { syncEventsToJournals } from './logseq/journal-sync';
-import { SETTINGS_SCHEMA, parseSettings } from './logseq/settings';
+import { getLogseqLocale } from './logseq/locale';
+import { getSettingsSchema, parseSettings } from './logseq/settings';
 import { loadJournalTasks } from './logseq/tasks';
 import { loadSnapshot, saveSnapshot, type Snapshot } from './sync/cache';
 import { refreshFeeds } from './sync/ical';
@@ -45,6 +47,7 @@ type RefreshWeatherOnlyOptions = {
 };
 
 type BootPluginOptions = {
+  onOpen?: () => void | Promise<void>;
   onRefresh?: () => void | Promise<void>;
   onSettingsChanged?: () => void | Promise<void>;
   onTasksChanged?: () => void | Promise<void>;
@@ -57,11 +60,9 @@ type SerializedRefreshOptions = {
 
 const REFRESH_COMMAND_KEY = 'logseq-google-agenda-refresh';
 const REFRESH_SHORTCUT_KEY = 'logseq-google-agenda-refresh-shortcut';
-const REFRESH_COMMAND_LABEL = 'Refresh Google Agenda';
 const REFRESH_SHORTCUT = 'mod+shift+r';
 const OPEN_COMMAND_KEY = 'logseq-google-agenda-open';
 const OPEN_SHORTCUT_KEY = 'logseq-google-agenda-open-shortcut';
-const OPEN_COMMAND_LABEL = 'Open Google Agenda';
 const OPEN_SHORTCUT = 'mod+shift+g';
 let isMainUiVisible = false;
 
@@ -104,8 +105,8 @@ function getTaskReader(): LogseqTaskReader | null {
   return editor;
 }
 
-function getLocale(): string {
-  return navigator.language || 'en-US';
+function shouldReportWeatherError(reportError: (message: string, error: unknown) => void) {
+  return reportError !== console.error;
 }
 
 async function loadWeather(
@@ -128,10 +129,11 @@ async function loadWeather(
   }
 
   try {
+    const locale = await getLogseqLocale();
     const result = await refreshWeather({
       city,
       fetchImpl,
-      locale: getLocale(),
+      locale,
     });
 
     console.log('[logseq-google-agenda] Weather refresh result', {
@@ -142,7 +144,13 @@ async function loadWeather(
 
     return result;
   } catch (error) {
-    reportError('Failed to refresh weather', error);
+    if (shouldReportWeatherError(reportError)) {
+      reportError('Failed to refresh weather', error);
+    }
+    console.warn('[logseq-google-agenda] Weather refresh failed; using fallback weather data', {
+      city,
+      error,
+    });
     return fallback;
   }
 }
@@ -364,14 +372,19 @@ export function startWeatherRefreshLoop(
   };
 }
 
-export async function bootPlugin({ onRefresh, onSettingsChanged, onTasksChanged }: BootPluginOptions = {}): Promise<() => void> {
+export async function bootPlugin({ onOpen, onRefresh, onSettingsChanged, onTasksChanged }: BootPluginOptions = {}): Promise<() => void> {
   let offSettingsChanged = () => {};
   let offDbChanged = () => {};
 
   console.log('[logseq-google-agenda] Plugin boot start');
 
   await logseq.ready(async () => {
-    logseq.useSettingsSchema([...SETTINGS_SCHEMA]);
+    const locale = await getLogseqLocale();
+    const t = createTranslator(locale);
+    const openCommandLabel = t('command.openAgenda');
+    const refreshCommandLabel = t('command.refreshAgenda');
+
+    logseq.useSettingsSchema(getSettingsSchema(locale));
     logseq.setMainUIInlineStyle({
       zIndex: 9999,
       position: 'fixed',
@@ -385,22 +398,29 @@ export async function bootPlugin({ onRefresh, onSettingsChanged, onTasksChanged 
     const openAgenda = async () => {
       console.log('[logseq-google-agenda] Open command handler start');
 
+      const resolvedVisible = getMainUiVisible();
+      console.log('[logseq-google-agenda] Toggle state evaluated', {
+        inMemoryVisible: isMainUiVisible,
+        windowVisible: getWindowMainUiVisible() ?? false,
+        resolvedVisible,
+      });
+
+      if (resolvedVisible) {
+        console.log('[logseq-google-agenda] Calling hideMainUI', { restoreEditingCursor: true });
+        logseq.hideMainUI({ restoreEditingCursor: true });
+        setMainUiVisible(false);
+        console.log('[logseq-google-agenda] hideMainUI completed', { restoreEditingCursor: true });
+        return;
+      }
+
       try {
-        const resolvedVisible = getMainUiVisible();
-        console.log('[logseq-google-agenda] Toggle state evaluated', {
-          inMemoryVisible: isMainUiVisible,
-          windowVisible: getWindowMainUiVisible() ?? false,
-          resolvedVisible,
-        });
+        await onOpen?.();
+      } catch (error) {
+        console.error('[logseq-google-agenda] onOpen failed', error);
+        throw error;
+      }
 
-        if (resolvedVisible) {
-          console.log('[logseq-google-agenda] Calling hideMainUI', { restoreEditingCursor: true });
-          logseq.hideMainUI({ restoreEditingCursor: true });
-          setMainUiVisible(false);
-          console.log('[logseq-google-agenda] hideMainUI completed', { restoreEditingCursor: true });
-          return;
-        }
-
+      try {
         console.log('[logseq-google-agenda] Calling showMainUI', { autoFocus: true });
         await logseq.showMainUI({ autoFocus: true });
         setMainUiVisible(true);
@@ -417,13 +437,13 @@ export async function bootPlugin({ onRefresh, onSettingsChanged, onTasksChanged 
     logseq.App.registerCommandPalette(
       {
         key: OPEN_COMMAND_KEY,
-        label: OPEN_COMMAND_LABEL,
+        label: openCommandLabel,
       },
       openAgenda,
     );
     logseq.App.registerCommandShortcut(OPEN_SHORTCUT, openAgenda, {
       key: OPEN_SHORTCUT_KEY,
-      label: OPEN_COMMAND_LABEL,
+      label: openCommandLabel,
     });
     console.log('[logseq-google-agenda] Open command registered', {
       commandKey: OPEN_COMMAND_KEY,
@@ -434,13 +454,13 @@ export async function bootPlugin({ onRefresh, onSettingsChanged, onTasksChanged 
     logseq.App.registerCommandPalette(
       {
         key: REFRESH_COMMAND_KEY,
-        label: REFRESH_COMMAND_LABEL,
+        label: refreshCommandLabel,
       },
       runRefresh,
     );
     logseq.App.registerCommandShortcut(REFRESH_SHORTCUT, runRefresh, {
       key: REFRESH_SHORTCUT_KEY,
-      label: REFRESH_COMMAND_LABEL,
+      label: refreshCommandLabel,
     });
     console.log('[logseq-google-agenda] Refresh command registered', {
       commandKey: REFRESH_COMMAND_KEY,

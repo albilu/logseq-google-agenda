@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgendaTask } from './calendar/types';
 import type { Snapshot } from './sync/cache';
-import { SETTINGS_SCHEMA } from './logseq/settings';
+import { SETTINGS_SCHEMA, getSettingsSchema } from './logseq/settings';
 vi.mock('./sync/weather', () => ({
   refreshWeather: vi.fn(),
 }));
@@ -898,6 +898,65 @@ describe('bootPlugin', () => {
     expect(logseqMock.hideMainUI).toHaveBeenNthCalledWith(1, { restoreEditingCursor: true });
   });
 
+  it('calls onOpen only when showing the panel', async () => {
+    const logseqMock = createLogseqMock();
+    const onOpen = vi.fn(async () => undefined);
+
+    vi.stubGlobal('logseq', logseqMock);
+
+    await bootPlugin({ onOpen });
+
+    const commandAction = logseqMock.App.registerCommandPalette.mock.calls[0]?.[1] as () => Promise<void>;
+
+    await commandAction();
+    await commandAction();
+
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    expect(logseqMock.showMainUI).toHaveBeenCalledTimes(1);
+    expect(logseqMock.hideMainUI).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for onOpen before showing the panel', async () => {
+    const logseqMock = createLogseqMock();
+    const deferred = createDeferredPromise<void>();
+    const onOpen = vi.fn(() => deferred.promise);
+
+    vi.stubGlobal('logseq', logseqMock);
+
+    await bootPlugin({ onOpen });
+
+    const commandAction = logseqMock.App.registerCommandPalette.mock.calls[0]?.[1] as () => Promise<void>;
+    const opening = commandAction();
+
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    expect(logseqMock.showMainUI).not.toHaveBeenCalled();
+
+    deferred.resolve();
+    await opening;
+
+    expect(logseqMock.showMainUI).toHaveBeenCalledTimes(1);
+  });
+
+  it('logs onOpen failures, skips showMainUI, and rethrows the error', async () => {
+    const onOpenError = new Error('onOpen failed');
+    const logseqMock = createLogseqMock();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const onOpen = vi.fn(async () => {
+      throw onOpenError;
+    });
+
+    vi.stubGlobal('logseq', logseqMock);
+
+    await bootPlugin({ onOpen });
+
+    const commandAction = logseqMock.App.registerCommandPalette.mock.calls[0]?.[1] as () => Promise<void>;
+
+    await expect(commandAction()).rejects.toThrow(onOpenError);
+
+    expect(logseqMock.showMainUI).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith('[logseq-google-agenda] onOpen failed', onOpenError);
+  });
+
   it('closes after reopening when panel visibility was reset externally', async () => {
     const logseqMock = createLogseqMock();
 
@@ -1003,6 +1062,91 @@ describe('bootPlugin', () => {
 
     dispose();
     expect(offSettingsChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it('registers localized settings schema and command labels for German locales', async () => {
+    const logseqMock = createLogseqMock();
+
+    vi.stubGlobal('logseq', logseqMock);
+    vi.stubGlobal('navigator', { language: 'de-DE' });
+
+    await bootPlugin();
+
+    expect(logseqMock.useSettingsSchema).toHaveBeenCalledWith(getSettingsSchema('de-DE'));
+    expect(logseqMock.App.registerCommandPalette).toHaveBeenCalledWith(
+      {
+        key: 'logseq-google-agenda-open',
+        label: 'Google Agenda oeffnen',
+      },
+      expect.any(Function),
+    );
+    expect(logseqMock.App.registerCommandPalette).toHaveBeenCalledWith(
+      {
+        key: 'logseq-google-agenda-refresh',
+        label: 'Google Agenda aktualisieren',
+      },
+      expect.any(Function),
+    );
+    expect(logseqMock.App.registerCommandShortcut).toHaveBeenCalledWith(
+      'mod+shift+g',
+      expect.any(Function),
+      {
+        key: 'logseq-google-agenda-open-shortcut',
+        label: 'Google Agenda oeffnen',
+      },
+    );
+    expect(logseqMock.App.registerCommandShortcut).toHaveBeenCalledWith(
+      'mod+shift+r',
+      expect.any(Function),
+      {
+        key: 'logseq-google-agenda-refresh-shortcut',
+        label: 'Google Agenda aktualisieren',
+      },
+    );
+  });
+
+  it('falls back to English settings schema and command labels for bare zh locales', async () => {
+    const logseqMock = createLogseqMock();
+
+    vi.stubGlobal('logseq', logseqMock);
+    vi.stubGlobal('navigator', { language: 'zh' });
+
+    await bootPlugin();
+
+    expect(logseqMock.useSettingsSchema).toHaveBeenCalledWith(getSettingsSchema('en-US'));
+    expect(logseqMock.App.registerCommandPalette).toHaveBeenCalledWith(
+      {
+        key: 'logseq-google-agenda-open',
+        label: 'Open Google Agenda',
+      },
+      expect.any(Function),
+    );
+    expect(logseqMock.App.registerCommandPalette).toHaveBeenCalledWith(
+      {
+        key: 'logseq-google-agenda-refresh',
+        label: 'Refresh Google Agenda',
+      },
+      expect.any(Function),
+    );
+  });
+
+  it('prefers Logseq preferredLanguage over navigator.language for localization', async () => {
+    const logseqMock = createLogseqMock();
+
+    vi.stubGlobal('logseq', logseqMock);
+    vi.stubGlobal('navigator', { language: 'en-US' });
+    logseqMock.App.getUserConfigs = vi.fn(async () => ({ preferredLanguage: 'fr-FR' }));
+
+    await bootPlugin();
+
+    expect(logseqMock.useSettingsSchema).toHaveBeenCalledWith(getSettingsSchema('fr-FR'));
+    expect(logseqMock.App.registerCommandPalette).toHaveBeenCalledWith(
+      {
+        key: 'logseq-google-agenda-open',
+        label: 'Ouvrir Google Agenda',
+      },
+      expect.any(Function),
+    );
   });
 
   it('registers a DB.onChanged listener when onTasksChanged is provided and cleans it up on dispose', async () => {
@@ -1321,6 +1465,39 @@ describe('refreshWeatherOnly', () => {
     expect(result.syncedAt).not.toBe(currentSnapshot.syncedAt);
     expect(storage.setItem).toHaveBeenCalledWith('syncSnapshot', JSON.stringify(result));
     expect(reportError).toHaveBeenCalledWith('Failed to refresh weather', weatherError);
+  });
+
+  it('uses a warning instead of console.error for default weather fallback logging', async () => {
+    const { refreshWeatherOnly } = await import('./plugin');
+    const storage: StorageLike = {
+      getItem: vi.fn(() => null),
+      setItem: vi.fn(),
+    };
+    const weatherError = new Error('weather failed');
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    vi.mocked(refreshWeather).mockRejectedValue(weatherError);
+
+    await refreshWeatherOnly({
+      currentSnapshot: createSnapshot(),
+      storage,
+      settings: {
+        feeds: '[]',
+        refreshIntervalMinutes: 15,
+        weatherCity: 'Paris',
+        weatherRefreshIntervalMinutes: 90,
+      },
+    });
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[logseq-google-agenda] Weather refresh failed; using fallback weather data',
+      {
+        city: 'Paris',
+        error: weatherError,
+      },
+    );
+    expect(errorSpy).not.toHaveBeenCalledWith('Failed to refresh weather', weatherError);
   });
 
   it('logs when weather refresh is skipped because no city is configured', async () => {

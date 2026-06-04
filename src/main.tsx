@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { format } from 'date-fns';
 import { AgendaApp } from './app/AgendaApp';
+import { getLogseqLocale } from './logseq/locale';
 import type { Snapshot } from './sync/cache';
 import {
   bootPlugin,
@@ -77,6 +78,7 @@ if (!container) {
 
 function AgendaPluginRoot() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(() => getInitialSnapshot());
+  const [locale, setLocale] = useState('en-US');
   const [isRefreshing, setIsRefreshing] = useState(false);
   const snapshotRef = useRef(snapshot);
   const refreshSequenceRef = useRef(0);
@@ -147,13 +149,27 @@ function AgendaPluginRoot() {
     let stopRefreshLoop = () => {};
     let stopWeatherRefreshLoop = () => {};
 
+    void getLogseqLocale().then((resolvedLocale) => {
+      if (!isDisposed) {
+        setLocale(resolvedLocale);
+      }
+    });
+
     void bootPlugin({
+      onOpen: () => {
+        return getLogseqLocale().then((resolvedLocale) => {
+          if (!isDisposed) {
+            setLocale(resolvedLocale);
+          }
+        });
+      },
       onRefresh: trackRefresh,
       onSettingsChanged: () => {
         stopRefreshLoop();
         stopWeatherRefreshLoop();
         stopRefreshLoop = startRefreshLoop(trackRefresh);
         stopWeatherRefreshLoop = startWeatherRefreshLoop(handleWeatherRefresh);
+
         return trackRefresh();
       },
       onTasksChanged: debouncedTaskRefresh,
@@ -183,7 +199,7 @@ function AgendaPluginRoot() {
     };
   }, []);
 
-  return <AgendaApp snapshot={snapshot} isRefreshing={isRefreshing} onRefresh={trackRefresh} onClose={hideAgendaPanel} onDateDoubleClick={openJournalInSidebar} />;
+  return <AgendaApp locale={locale} snapshot={snapshot} isRefreshing={isRefreshing} onRefresh={trackRefresh} onClose={hideAgendaPanel} onDateDoubleClick={openJournalInSidebar} />;
 }
 
 createRoot(container).render(<AgendaPluginRoot />);

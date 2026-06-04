@@ -65,6 +65,135 @@ function createWeatherDay(overrides: Partial<WeatherDay>): WeatherDay {
 }
 
 describe('AgendaApp', () => {
+  it('renders French copy and locale-aware date labels when the runtime locale is French', () => {
+    const originalLanguage = window.navigator.language;
+
+    Object.defineProperty(window.navigator, 'language', {
+      configurable: true,
+      value: 'fr-FR',
+    });
+
+    try {
+      render(
+        <AgendaApp
+          initialMonth={new Date(2026, 3, 1)}
+          today={new Date(2026, 3, 15)}
+        />,
+      );
+
+      expect(screen.getByRole('button', { name: 'Mois précédent' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: "Aujourd'hui" })).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'avril 2026' })).toBeInTheDocument();
+      expect(screen.getByText(/^lun\.?$/i)).toBeInTheDocument();
+
+      expect(screen.getByRole('group', { name: "Mode de l'agenda" })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Fermer' })).not.toBeInTheDocument();
+
+      const sidebar = screen.getByRole('complementary', { name: 'Détails du jour' });
+      const selectedSection = within(sidebar).getByRole('region', { name: 'Jour sélectionné' });
+
+      expect(within(selectedSection).getByRole('heading', { name: '15 avril' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /mercredi 15 avril 2026/i })).toBeInTheDocument();
+    } finally {
+      Object.defineProperty(window.navigator, 'language', {
+        configurable: true,
+        value: originalLanguage,
+      });
+    }
+  });
+
+  it('localizes weather labels in French from icon keys while preserving fallback labels', async () => {
+    const originalLanguage = window.navigator.language;
+
+    Object.defineProperty(window.navigator, 'language', {
+      configurable: true,
+      value: 'fr-FR',
+    });
+
+    try {
+      const user = userEvent.setup();
+      const snapshot = createSnapshot({
+        weather: [
+          createWeatherDay({
+            date: '2026-04-15',
+            conditionLabel: 'Partly cloudy',
+            iconKey: 'partly-cloudy',
+          }),
+          createWeatherDay({
+            date: '2026-04-16',
+            conditionLabel: 'Custom English fallback',
+            iconKey: 'unknown',
+          }),
+        ],
+      });
+
+      render(
+        <AgendaApp
+          snapshot={snapshot}
+          initialMonth={new Date(2026, 3, 1)}
+          today={new Date(2026, 3, 15)}
+        />,
+      );
+
+      const sidebar = screen.getByRole('complementary', { name: 'Détails du jour' });
+      const selectedSection = within(sidebar).getByRole('region', { name: 'Jour sélectionné' });
+      const todayButton = screen.getByRole('button', { name: /mercredi 15 avril 2026/i });
+      const fallbackButton = screen.getByRole('button', { name: /jeudi 16 avril 2026/i });
+
+      expect(within(todayButton).getByLabelText('Partiellement nuageux')).toBeInTheDocument();
+      expect(within(todayButton).queryByLabelText('Partly cloudy')).not.toBeInTheDocument();
+      expect(within(selectedSection).getByText('Partiellement nuageux')).toBeInTheDocument();
+      expect(within(selectedSection).queryByText('Partly cloudy')).not.toBeInTheDocument();
+
+      await user.click(fallbackButton);
+
+      expect(within(selectedSection).getByText('Custom English fallback')).toBeInTheDocument();
+    } finally {
+      Object.defineProperty(window.navigator, 'language', {
+        configurable: true,
+        value: originalLanguage,
+      });
+    }
+  });
+
+  it('falls back to English panel formatting for unsupported locales', () => {
+    const originalLanguage = window.navigator.language;
+
+    Object.defineProperty(window.navigator, 'language', {
+      configurable: true,
+      value: 'es-ES',
+    });
+
+    try {
+      render(
+        <AgendaApp
+          initialMonth={new Date(2026, 3, 1)}
+          today={new Date(2026, 3, 15)}
+        />,
+      );
+
+      expect(screen.getByRole('heading', { name: 'April 2026' })).toBeInTheDocument();
+      expect(screen.getByText('Mon')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Wednesday, April 15, 2026/i })).toBeInTheDocument();
+    } finally {
+      Object.defineProperty(window.navigator, 'language', {
+        configurable: true,
+        value: originalLanguage,
+      });
+    }
+  });
+
+  it('does not render a close button when no close handler is provided', () => {
+    render(
+      <AgendaApp
+        initialMonth={new Date(2026, 3, 1)}
+        today={new Date(2026, 3, 15)}
+      />,
+    );
+
+    expect(screen.queryByRole('button', { name: 'Close' })).not.toBeInTheDocument();
+  });
+
   it('keeps the month-grid weather badge footprint while only enlarging the glyph', () => {
     const styles = readFileSync(resolve(__dirname, '../styles.css'), 'utf8');
     const weatherIconRuleMatch = styles.match(/\.agenda-day__weather-icon\s*\{([\s\S]*?)\}/);
@@ -105,6 +234,7 @@ describe('AgendaApp', () => {
       />,
     );
 
+    expect(screen.getByRole('group', { name: 'Agenda mode' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'April 2026' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Previous month' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Next month' })).toBeInTheDocument();
@@ -365,10 +495,11 @@ describe('AgendaApp', () => {
       const nextButton = within(toolbar).getByRole('button', { name: 'Next month' });
       const closeButton = within(toolbar).getByRole('button', { name: 'Close' });
       const todayButton = within(toolbar).getByRole('button', { name: 'Today' });
+      const modeGroup = within(toolbar).getByRole('group', { name: 'Agenda mode' });
 
       expect(within(toolbar).queryByText('Month')).not.toBeInTheDocument();
-      expect(within(toolbar).getByRole('button', { name: 'Calendar' })).toBeInTheDocument();
-      expect(within(toolbar).getByRole('button', { name: 'Tasks' })).toBeInTheDocument();
+      expect(within(modeGroup).getByRole('button', { name: 'Calendar' })).toBeInTheDocument();
+      expect(within(modeGroup).getByRole('button', { name: 'Tasks' })).toBeInTheDocument();
       expect(within(toolbar).queryByRole('button', { name: 'Refresh' })).not.toBeInTheDocument();
       expect(closeButton).toBeInTheDocument();
       expect(within(toolbar).queryByRole('button', { name: 'Prev' })).not.toBeInTheDocument();

@@ -1,39 +1,46 @@
 import type { FeedConfig } from '../sync/ical';
+import { createTranslator } from '../i18n';
 
 const DEFAULT_FEEDS_JSON = '[]';
 const DEFAULT_REFRESH_INTERVAL_MINUTES = 15;
 const DEFAULT_WEATHER_REFRESH_INTERVAL_MINUTES = 60;
 
-export const SETTINGS_SCHEMA = [
-  {
-    key: 'feeds',
-    type: 'string',
-    title: 'Calendar feeds',
-    description: 'JSON array of feed objects with url, calendarName, and optional color.',
-    default: DEFAULT_FEEDS_JSON,
-  },
-  {
-    key: 'refreshIntervalMinutes',
-    type: 'number',
-    title: 'Refresh interval (minutes)',
-    description: 'How often feeds should refresh automatically.',
-    default: DEFAULT_REFRESH_INTERVAL_MINUTES,
-  },
-  {
-    key: 'weatherCity',
-    type: 'string',
-    title: 'Weather city',
-    description: 'City, region, or country to use for weather forecasts.',
-    default: '',
-  },
-  {
-    key: 'weatherRefreshIntervalMinutes',
-    type: 'number',
-    title: 'Weather refresh interval (minutes)',
-    description: 'How often weather should refresh automatically.',
-    default: DEFAULT_WEATHER_REFRESH_INTERVAL_MINUTES,
-  },
-] as const;
+export function getSettingsSchema(locale?: string) {
+  const t = createTranslator(locale);
+
+  return [
+    {
+      key: 'feeds',
+      type: 'string',
+      title: t('settings.feeds.title'),
+      description: t('settings.feeds.description'),
+      default: DEFAULT_FEEDS_JSON,
+    },
+    {
+      key: 'refreshIntervalMinutes',
+      type: 'number',
+      title: t('settings.refreshIntervalMinutes.title'),
+      description: t('settings.refreshIntervalMinutes.description'),
+      default: DEFAULT_REFRESH_INTERVAL_MINUTES,
+    },
+    {
+      key: 'weatherCity',
+      type: 'string',
+      title: t('settings.weatherCity.title'),
+      description: t('settings.weatherCity.description'),
+      default: '',
+    },
+    {
+      key: 'weatherRefreshIntervalMinutes',
+      type: 'number',
+      title: t('settings.weatherRefreshIntervalMinutes.title'),
+      description: t('settings.weatherRefreshIntervalMinutes.description'),
+      default: DEFAULT_WEATHER_REFRESH_INTERVAL_MINUTES,
+    },
+  ] as const;
+}
+
+export const SETTINGS_SCHEMA = getSettingsSchema('en-US');
 
 export type PluginSettings = {
   feeds: FeedConfig[];

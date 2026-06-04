@@ -3,19 +3,26 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import { buildMonthGrid, getOverflowCount, toDateKey } from '../calendar/month-grid';
 import { groupEventsByDate } from '../calendar/group-events';
 import type { AgendaTask, CalendarEvent, WeatherDay } from '../calendar/types';
+import {
+  createTranslator,
+  formatLocaleDate,
+  getFormattingLocale,
+  getWeatherConditionLabel,
+  getWeekdayLabels,
+} from '../i18n';
 import type { Snapshot } from '../sync/cache';
 
 type AgendaAppProps = {
   snapshot?: Snapshot | null;
   initialMonth?: Date;
   today?: Date;
+  locale?: string;
   isRefreshing?: boolean;
   onRefresh?: () => void;
   onClose?: () => void;
   onDateDoubleClick?: (date: Date) => void;
 };
 
-const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const VISIBLE_EVENT_LIMIT = 3;
 const MIN_SELECTED_PANEL_RATIO = 0.15;
 const MAX_SELECTED_PANEL_RATIO = 0.85;
@@ -52,40 +59,46 @@ function setDateInMonth(month: Date, dayOfMonth: number) {
   return new Date(month.getFullYear(), month.getMonth(), Math.min(dayOfMonth, lastDayOfMonth));
 }
 
-function formatMonthHeading(date: Date) {
-  return new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric' }).format(date);
+function formatMonthHeading(date: Date, locale: string) {
+  return formatLocaleDate(locale, date, { month: 'long', year: 'numeric' });
 }
 
-function formatDayButtonLabel(date: Date) {
-  return new Intl.DateTimeFormat('en-US', {
+function formatDayButtonLabel(date: Date, locale: string) {
+  return formatLocaleDate(locale, date, {
     weekday: 'long',
     month: 'long',
     day: 'numeric',
     year: 'numeric',
-  }).format(date);
+  });
 }
 
-function formatDayButtonAccessibleLabel(date: Date, visibleItems: AgendaItem[], overflowCount: number) {
-  const parts = [formatDayButtonLabel(date)];
+function formatDayButtonAccessibleLabel(
+  date: Date,
+  visibleItems: AgendaItem[],
+  overflowCount: number,
+  locale: string,
+  t: ReturnType<typeof createTranslator>,
+) {
+  const parts = [formatDayButtonLabel(date, locale)];
 
   if (visibleItems.length > 0) {
     parts.push(visibleItems.map((item) => item.title).join(', '));
   }
 
   if (overflowCount > 0) {
-    parts.push(`+${overflowCount} more`);
+    parts.push(`+${overflowCount} ${t('agenda.more')}`);
   }
 
   return parts.join('. ');
 }
 
-function formatSyncIssues(errors: Snapshot['errors']) {
-  const label = errors.length === 1 ? 'Sync issue' : 'Sync issues';
+function formatSyncIssues(errors: Snapshot['errors'], t: ReturnType<typeof createTranslator>) {
+  const label = errors.length === 1 ? t('agenda.syncIssue') : t('agenda.syncIssues');
   return `${label}: ${errors.map((error) => error.message).join('; ')}`;
 }
 
-function formatSidebarHeading(date: Date) {
-  return new Intl.DateTimeFormat('en-US', { month: 'long', day: 'numeric' }).format(date);
+function formatSidebarHeading(date: Date, locale: string) {
+  return formatLocaleDate(locale, date, { month: 'long', day: 'numeric' });
 }
 
 function getWeatherIcon(iconKey: WeatherDay['iconKey']) {
@@ -107,18 +120,18 @@ function getWeatherIcon(iconKey: WeatherDay['iconKey']) {
   }
 }
 
-function formatShortDate(date: string | null | undefined) {
+function formatShortDate(date: string | null | undefined, locale: string) {
   if (!date) {
     return null;
   }
 
   const parsedDate = new Date(`${date}T00:00:00`);
 
-  return new Intl.DateTimeFormat('en-US', {
+  return formatLocaleDate(locale, parsedDate, {
     month: 'short',
     day: 'numeric',
     year: 'numeric',
-  }).format(parsedDate);
+  });
 }
 
 function getIsoWeekNumber(date: Date) {
@@ -134,9 +147,9 @@ function getIsoWeekNumber(date: Date) {
   return 1 + Math.round((target.getTime() - firstThursday.getTime()) / 604800000);
 }
 
-function formatEventTime(event: CalendarEvent) {
+function formatEventTime(event: CalendarEvent, locale: string, t: ReturnType<typeof createTranslator>) {
   if (event.allDay) {
-    return 'All day';
+    return t('agenda.allDay');
   }
 
   const timeFormat: Intl.DateTimeFormatOptions = {
@@ -144,8 +157,9 @@ function formatEventTime(event: CalendarEvent) {
     minute: '2-digit',
   };
 
-  const start = new Intl.DateTimeFormat('en-US', timeFormat).format(new Date(event.start));
-  const end = new Intl.DateTimeFormat('en-US', timeFormat).format(new Date(event.end));
+  const formattingLocale = getFormattingLocale(locale);
+  const start = new Intl.DateTimeFormat(formattingLocale, timeFormat).format(new Date(event.start));
+  const end = new Intl.DateTimeFormat(formattingLocale, timeFormat).format(new Date(event.end));
 
   return `${start} \u2013 ${end}`;
 }
@@ -164,10 +178,13 @@ export function AgendaApp({
   snapshot = null,
   initialMonth,
   today = new Date(),
+  locale,
   isRefreshing = false,
   onClose,
   onDateDoubleClick,
 }: AgendaAppProps) {
+  const resolvedLocale = locale ?? (typeof navigator !== 'undefined' ? navigator.language : 'en-US');
+  const t = createTranslator(resolvedLocale);
   const lastClickRef = useRef<{ dateKey: string; time: number } | null>(null);
   const sidebarRef = useRef<HTMLElement | null>(null);
   const resizeHandleRef = useRef<HTMLDivElement | null>(null);
@@ -198,12 +215,16 @@ export function AgendaApp({
     [snapshot?.weather],
   );
   const monthGrid = useMemo(() => buildMonthGrid(currentMonth), [currentMonth]);
+  const weekdayLabels = useMemo(() => getWeekdayLabels(resolvedLocale), [resolvedLocale]);
   const selectedDateKey = toDateKey(selectedDate);
   const selectedItems = mode === 'calendar'
     ? eventsByDate[selectedDateKey] ?? []
     : tasksByDate[selectedDateKey] ?? [];
   const selectedWeather = weatherByDate[selectedDateKey] ?? null;
   const selectedWeatherIcon = selectedWeather ? getWeatherIcon(selectedWeather.iconKey) : null;
+  const selectedWeatherLabel = selectedWeather
+      ? getWeatherConditionLabel(resolvedLocale, selectedWeather.iconKey, selectedWeather.conditionLabel)
+    : null;
   const visibleWeatherDateKeys = useMemo(() => {
     const keys = new Set<string>();
 
@@ -228,11 +249,11 @@ export function AgendaApp({
         ? eventsByDate[key] ?? []
         : tasksByDate[key] ?? [];
       if (dayItems.length > 0) {
-        days.push({ dateKey: key, label: formatSidebarHeading(d), items: dayItems });
+        days.push({ dateKey: key, label: formatSidebarHeading(d, resolvedLocale), items: dayItems });
       }
     }
     return days;
-  }, [normalizedToday, eventsByDate, tasksByDate, mode]);
+  }, [normalizedToday, eventsByDate, tasksByDate, mode, resolvedLocale]);
 
   function handleShiftMonth(delta: number) {
     const nextMonth = shiftMonth(currentMonth, delta);
@@ -329,7 +350,7 @@ export function AgendaApp({
               type="button"
               className="agenda-toolbar__icon-button agenda-toolbar__icon-button--nav"
               onClick={() => handleShiftMonth(-1)}
-              aria-label="Previous month"
+              aria-label={t('agenda.previousMonth')}
             >
               <span aria-hidden="true" className="agenda-toolbar__icon-glyph">&lt;</span>
             </button>
@@ -337,27 +358,31 @@ export function AgendaApp({
               type="button"
               className="agenda-toolbar__icon-button agenda-toolbar__icon-button--nav"
               onClick={() => handleShiftMonth(1)}
-              aria-label="Next month"
+              aria-label={t('agenda.nextMonth')}
             >
               <span aria-hidden="true" className="agenda-toolbar__icon-glyph">&gt;</span>
             </button>
           </div>
-          <h1 className="agenda-toolbar__title">{formatMonthHeading(currentMonth)}</h1>
+          <h1 className="agenda-toolbar__title">{formatMonthHeading(currentMonth, resolvedLocale)}</h1>
           {isRefreshing ? (
-            <span className="agenda-toolbar__spinner" role="status" aria-label="Refreshing">
+            <span className="agenda-toolbar__spinner" role="status" aria-label={t('agenda.refreshing')}>
               <span className="agenda-toolbar__spinner-dot" aria-hidden="true" />
             </span>
           ) : null}
         </div>
 
         <div className="agenda-toolbar__section agenda-toolbar__section--secondary">
-          <div className="agenda-toolbar__group agenda-toolbar__group--views" aria-label="Agenda mode">
+          <div
+            className="agenda-toolbar__group agenda-toolbar__group--views"
+            role="group"
+            aria-label={t('agenda.mode')}
+          >
             <button
               type="button"
               className="agenda-toolbar__button"
               onClick={handleToday}
             >
-              Today
+              {t('agenda.today')}
             </button>
             <button
               type="button"
@@ -365,7 +390,7 @@ export function AgendaApp({
               aria-pressed={mode === 'calendar'}
               onClick={() => setMode('calendar')}
             >
-              Calendar
+              {t('agenda.calendar')}
             </button>
             <button
               type="button"
@@ -373,31 +398,33 @@ export function AgendaApp({
               aria-pressed={mode === 'tasks'}
               onClick={() => setMode('tasks')}
             >
-              Tasks
+              {t('agenda.tasks')}
             </button>
           </div>
+          {onClose ? (
             <button
               type="button"
               className="agenda-toolbar__icon-button agenda-toolbar__icon-button--close"
               onClick={onClose}
-              aria-label="Close"
+              aria-label={t('agenda.close')}
             >
               <span aria-hidden="true" className="agenda-toolbar__icon-glyph">x</span>
             </button>
+          ) : null}
         </div>
       </header>
 
       {snapshot && snapshot.errors.length > 0 ? (
         <section className="agenda-banner" role="status">
-          {formatSyncIssues(snapshot.errors)}
+          {formatSyncIssues(snapshot.errors, t)}
         </section>
       ) : null}
 
       <div className="agenda-layout">
-        <section className="agenda-calendar" aria-label="Month calendar">
+        <section className="agenda-calendar" aria-label={t('agenda.monthCalendar')}>
           <div className="agenda-weekdays" aria-hidden="true">
-            <span className="agenda-weekdays__week-label">Week</span>
-            {WEEKDAYS.map((weekday) => (
+            <span className="agenda-weekdays__week-label">{t('agenda.week')}</span>
+            {weekdayLabels.map((weekday) => (
               <span key={weekday}>{weekday}</span>
             ))}
           </div>
@@ -405,13 +432,16 @@ export function AgendaApp({
           <div className="agenda-grid">
             {monthGrid.map((week) => (
               <div key={week[0].dateKey} className="agenda-week-row">
-                <span className="agenda-week-label">Week {getIsoWeekNumber(week[0].date)}</span>
+                <span className="agenda-week-label">{t('agenda.week')} {getIsoWeekNumber(week[0].date)}</span>
                 {week.map((day) => {
                   const dayItems = mode === 'calendar'
                     ? eventsByDate[day.dateKey] ?? []
                     : tasksByDate[day.dateKey] ?? [];
                   const dayWeather = visibleWeatherDateKeys.has(day.dateKey) ? weatherByDate[day.dateKey] : null;
                   const weatherIcon = dayWeather ? getWeatherIcon(dayWeather.iconKey) : null;
+                  const weatherLabel = dayWeather
+                    ? getWeatherConditionLabel(resolvedLocale, dayWeather.iconKey, dayWeather.conditionLabel)
+                    : null;
                   const visibleItems = dayItems.slice(0, VISIBLE_EVENT_LIMIT);
                   const overflowCount = getOverflowCount(dayItems.length, VISIBLE_EVENT_LIMIT);
                   const isSelected = day.dateKey === selectedDateKey;
@@ -427,7 +457,7 @@ export function AgendaApp({
                       ]
                         .filter(Boolean)
                         .join(' ')}
-                      aria-label={formatDayButtonAccessibleLabel(day.date, visibleItems, overflowCount)}
+                      aria-label={formatDayButtonAccessibleLabel(day.date, visibleItems, overflowCount, resolvedLocale, t)}
                       aria-pressed={isSelected}
                       onClick={() => handleDayClick(day.date, day.dateKey)}
                     >
@@ -437,7 +467,7 @@ export function AgendaApp({
                           <span
                             className="agenda-day__weather-icon"
                             role="img"
-                            aria-label={dayWeather?.conditionLabel}
+                            aria-label={weatherLabel ?? undefined}
                           >
                             {weatherIcon}
                           </span>
@@ -450,7 +480,7 @@ export function AgendaApp({
                           </span>
                         ))}
                         {overflowCount > 0 ? (
-                          <span className="agenda-overflow-pill">+{overflowCount} more</span>
+                          <span className="agenda-overflow-pill">+{overflowCount} {t('agenda.more')}</span>
                         ) : null}
                       </span>
                     </button>
@@ -464,20 +494,20 @@ export function AgendaApp({
         <aside
           ref={sidebarRef}
           className={`agenda-sidebar${isDraggingSidebar ? ' agenda-sidebar--resizing' : ''}`}
-          aria-label="Day details"
+          aria-label={t('agenda.dayDetails')}
           onPointerMove={handleResizePointerMove}
           onPointerUp={handleResizePointerUp}
           onPointerCancel={handleResizePointerCancel}
         >
           <section
             className="agenda-sidebar__selected"
-            aria-label="Selected day"
+            aria-label={t('agenda.selectedDay')}
             style={{ flex: `0 0 ${selectedPanelRatio * 100}%` }}
           >
             <div className="agenda-sidebar__selected-header">
-              <h2>{formatSidebarHeading(selectedDate)}</h2>
+              <h2>{formatSidebarHeading(selectedDate, resolvedLocale)}</h2>
               {selectedWeather ? (
-                <div className="agenda-sidebar__weather" aria-label="Weather details">
+                <div className="agenda-sidebar__weather" aria-label={t('agenda.weatherDetails')}>
                   <p className="agenda-sidebar__weather-temperature">{selectedWeather.temperatureDisplay}</p>
                   <p className="agenda-sidebar__weather-detail agenda-sidebar__weather-condition">
                     {selectedWeatherIcon ? (
@@ -485,16 +515,16 @@ export function AgendaApp({
                         {selectedWeatherIcon}
                       </span>
                     ) : null}
-                    <span>{selectedWeather.conditionLabel}</span>
+                    <span>{selectedWeatherLabel}</span>
                   </p>
                   <p className="agenda-sidebar__weather-detail">
-                    Precipitation {selectedWeather.precipitationChance}%
+                    {t('agenda.precipitation')} {selectedWeather.precipitationChance}%
                   </p>
                 </div>
               ) : null}
             </div>
             {selectedItems.length === 0 ? (
-              <div className="agenda-empty-state">No data</div>
+              <div className="agenda-empty-state">{t('agenda.noData')}</div>
             ) : (
               <div className="agenda-event-list">
                 {selectedItems.map((item) =>
@@ -504,7 +534,7 @@ export function AgendaApp({
                         <h3 className="agenda-sidebar__event-title">{item.title}</h3>
                         <p className="agenda-sidebar__calendar">{item.calendarName}</p>
                       </div>
-                      <p className="agenda-sidebar__time">{formatEventTime(item)}</p>
+                      <p className="agenda-sidebar__time">{formatEventTime(item, resolvedLocale, t)}</p>
                     </article>
                   ) : (
                     <article key={item.id} className="agenda-sidebar__event agenda-sidebar__event--task">
@@ -515,16 +545,16 @@ export function AgendaApp({
                       <div className="agenda-sidebar__task-meta">
                         <p className="agenda-sidebar__time">{item.marker}</p>
                         {item.priority ? (
-                          <p className="agenda-sidebar__detail">Priority {item.priority}</p>
+                          <p className="agenda-sidebar__detail">{t('agenda.priority')} {item.priority}</p>
                         ) : null}
-                        {formatShortDate(item.scheduled) ? (
+                        {formatShortDate(item.scheduled, resolvedLocale) ? (
                           <p className="agenda-sidebar__detail">
-                            Scheduled {formatShortDate(item.scheduled)}
+                            {t('agenda.scheduled')} {formatShortDate(item.scheduled, resolvedLocale)}
                           </p>
                         ) : null}
-                        {formatShortDate(item.deadline) ? (
+                        {formatShortDate(item.deadline, resolvedLocale) ? (
                           <p className="agenda-sidebar__detail">
-                            Due {formatShortDate(item.deadline)}
+                            {t('agenda.due')} {formatShortDate(item.deadline, resolvedLocale)}
                           </p>
                         ) : null}
                       </div>
@@ -539,7 +569,7 @@ export function AgendaApp({
             className="agenda-sidebar__resize-handle"
             role="separator"
             aria-orientation="horizontal"
-            aria-label="Resize sidebar sections"
+            aria-label={t('agenda.resizeSidebarSections')}
             aria-valuemin={MIN_SELECTED_PANEL_RATIO * 100}
             aria-valuemax={MAX_SELECTED_PANEL_RATIO * 100}
             aria-valuenow={Math.round(selectedPanelRatio * 100)}
@@ -552,12 +582,12 @@ export function AgendaApp({
 
           <section
             className="agenda-sidebar__upcoming"
-            aria-label="Upcoming"
+            aria-label={t('agenda.upcoming')}
             style={{ flex: `1 1 0`, minHeight: `${(1 - selectedPanelRatio) * 100}%` }}
           >
-            <h2>Upcoming</h2>
+            <h2>{t('agenda.upcoming')}</h2>
             {upcomingDays.length === 0 ? (
-              <div className="agenda-empty-state">Nothing upcoming</div>
+              <div className="agenda-empty-state">{t('agenda.nothingUpcoming')}</div>
             ) : (
               <div className="agenda-event-list">
                 {upcomingDays.map((day) => (
@@ -570,7 +600,7 @@ export function AgendaApp({
                             <h3 className="agenda-sidebar__event-title">{item.title}</h3>
                             <p className="agenda-sidebar__calendar">{item.calendarName}</p>
                           </div>
-                          <p className="agenda-sidebar__time">{formatEventTime(item)}</p>
+                          <p className="agenda-sidebar__time">{formatEventTime(item, resolvedLocale, t)}</p>
                         </article>
                       ) : (
                         <article key={item.id} className="agenda-sidebar__event agenda-sidebar__event--task">
