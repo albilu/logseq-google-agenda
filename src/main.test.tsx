@@ -17,8 +17,10 @@ const createSerializedRefresh = vi.fn();
 const getInitialSnapshot = vi.fn();
 const refreshSnapshot = vi.fn();
 const refreshTasksOnly = vi.fn();
+const refreshWeatherOnly = vi.fn();
 const setMainUiVisible = vi.fn();
 const startRefreshLoop = vi.fn();
+const startWeatherRefreshLoop = vi.fn();
 const syncEventsToJournals = vi.fn();
 
 let latestAgendaAppProps: AgendaAppProps | null = null;
@@ -40,8 +42,10 @@ vi.mock('./plugin', () => ({
   getInitialSnapshot: (...args: Parameters<typeof getInitialSnapshot>) => getInitialSnapshot(...args),
   refreshSnapshot: (...args: Parameters<typeof refreshSnapshot>) => refreshSnapshot(...args),
   refreshTasksOnly: (...args: Parameters<typeof refreshTasksOnly>) => refreshTasksOnly(...args),
+  refreshWeatherOnly: (...args: Parameters<typeof refreshWeatherOnly>) => refreshWeatherOnly(...args),
   setMainUiVisible: (...args: Parameters<typeof setMainUiVisible>) => setMainUiVisible(...args),
   startRefreshLoop: (...args: Parameters<typeof startRefreshLoop>) => startRefreshLoop(...args),
+  startWeatherRefreshLoop: (...args: Parameters<typeof startWeatherRefreshLoop>) => startWeatherRefreshLoop(...args),
   syncEventsToJournals,
 }));
 
@@ -60,11 +64,12 @@ vi.mock('react-dom/client', async () => {
 
 function createSnapshot(overrides: Partial<Snapshot> = {}): Snapshot {
   return {
-    events: [],
-    tasks: [],
-    errors: [],
-    syncedAt: '2026-04-10T12:00:00.000Z',
-    ...overrides,
+    events: overrides.events ?? [],
+    tasks: overrides.tasks ?? [],
+    weather: overrides.weather ?? [],
+    weatherLocation: overrides.weatherLocation ?? null,
+    errors: overrides.errors ?? [],
+    syncedAt: overrides.syncedAt ?? '2026-04-10T12:00:00.000Z',
   };
 }
 
@@ -82,6 +87,7 @@ function createDeferredPromise<T>() {
 
 async function loadMain() {
   document.body.innerHTML = '<div id="app"></div>';
+  latestAgendaAppProps = null;
   await act(async () => {
     await import('./main');
   });
@@ -105,6 +111,13 @@ beforeEach(() => {
 
   vi.stubGlobal('logseq', {
     hideMainUI: vi.fn(),
+    App: {
+      getUserConfigs: vi.fn(async () => ({ preferredDateFormat: 'yyyy-MM-dd' })),
+    },
+    Editor: {
+      getPage: vi.fn(async () => null),
+      openInRightSidebar: vi.fn(async () => undefined),
+    },
   });
 
   bootPlugin.mockReset();
@@ -113,17 +126,23 @@ beforeEach(() => {
   getInitialSnapshot.mockReset();
   refreshSnapshot.mockReset();
   refreshTasksOnly.mockReset();
+  refreshWeatherOnly.mockReset();
   setMainUiVisible.mockReset();
   startRefreshLoop.mockReset();
+  startWeatherRefreshLoop.mockReset();
   syncEventsToJournals.mockReset();
 
   getInitialSnapshot.mockReturnValue(null);
   bootPlugin.mockResolvedValue(vi.fn());
   startRefreshLoop.mockReturnValue(vi.fn());
+  startWeatherRefreshLoop.mockReturnValue(vi.fn());
   createDebouncedCallback.mockImplementation((fn: () => void) => fn);
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await act(async () => {
+    latestRoot?.unmount();
+  });
   vi.unstubAllGlobals();
   latestRoot = null;
   document.body.innerHTML = '';
@@ -213,8 +232,9 @@ describe('main wiring', () => {
     });
 
     await waitFor(() => {
-      expect(createSerializedRefresh).toHaveBeenCalledTimes(1);
+      expect(createSerializedRefresh).toHaveBeenCalledTimes(2);
       expect(createdRunners[0]).toHaveBeenCalledTimes(5);
+      expect(createdRunners[1]).not.toHaveBeenCalled();
     });
   });
 
@@ -238,6 +258,378 @@ describe('main wiring', () => {
       expect(refreshSnapshot).toHaveBeenCalledTimes(1);
       expect(latestAgendaAppProps?.snapshot).toEqual(freshSnapshot);
     });
+  });
+
+  it('keeps isRefreshing true until the serialized refresh queue drains', async () => {
+    const initialSnapshot = createSnapshot({ syncedAt: '2026-04-10T12:00:00.000Z' });
+    const firstQueuedSnapshot = createSnapshot({ syncedAt: '2026-04-10T12:01:00.000Z' });
+    const secondQueuedSnapshot = createSnapshot({ syncedAt: '2026-04-10T12:02:00.000Z' });
+    const firstDeferred = createDeferredPromise<Snapshot>();
+    const secondDeferred = createDeferredPromise<Snapshot>();
+
+    refreshSnapshot
+      .mockResolvedValueOnce(initialSnapshot)
+      .mockImplementationOnce(() => firstDeferred.promise)
+      .mockImplementationOnce(() => secondDeferred.promise);
+    createSerializedRefresh.mockImplementation((refresh: () => Promise<Snapshot>, options?: {
+      onSnapshot?: (snapshot: Snapshot) => void;
+      onError?: (error: unknown) => void;
+    }) => {
+      let inFlight: Promise<void> | null = null;
+      let queuedTail: Promise<void> | null = null;
+      let queued = false;
+
+      async function run() {
+        try {
+          const snapshot = await refresh();
+          options?.onSnapshot?.(snapshot);
+        } catch (error) {
+          options?.onError?.(error);
+        } finally {
+          inFlight = null;
+
+          if (queued) {
+            queued = false;
+            const rerun = run();
+            inFlight = rerun;
+            queuedTail = rerun;
+          } else {
+            queuedTail = null;
+          }
+        }
+      }
+
+      return () => {
+        if (inFlight) {
+          queued = true;
+          queuedTail = (queuedTail ?? inFlight).then(() => inFlight ?? Promise.resolve());
+          return queuedTail;
+        }
+
+        inFlight = run();
+        queuedTail = null;
+        return inFlight;
+      };
+    });
+
+    await loadMain();
+
+    await waitFor(() => {
+      expect(latestAgendaAppProps?.isRefreshing).toBe(false);
+    });
+
+    let firstRefresh: Promise<void> | undefined;
+    let secondRefresh: Promise<void> | undefined;
+    const onRefresh = latestAgendaAppProps?.onRefresh as (() => Promise<void>) | undefined;
+
+    await act(async () => {
+      firstRefresh = onRefresh?.();
+      secondRefresh = onRefresh?.();
+    });
+
+    expect(latestAgendaAppProps?.isRefreshing).toBe(true);
+
+    await act(async () => {
+      firstDeferred.resolve(firstQueuedSnapshot);
+      await firstRefresh;
+    });
+
+    expect(latestAgendaAppProps?.snapshot).toEqual(firstQueuedSnapshot);
+    expect(latestAgendaAppProps?.isRefreshing).toBe(true);
+
+    await act(async () => {
+      secondDeferred.resolve(secondQueuedSnapshot);
+      await secondRefresh;
+    });
+
+    expect(latestAgendaAppProps?.snapshot).toEqual(secondQueuedSnapshot);
+    expect(latestAgendaAppProps?.isRefreshing).toBe(false);
+  });
+
+  it('starts, restarts, and stops the weather loop alongside the agenda loop', async () => {
+    const startupSnapshot = createSnapshot({ syncedAt: '2026-04-10T12:00:00.000Z' });
+    const refreshedSnapshot = createSnapshot({ syncedAt: '2026-04-10T12:05:00.000Z' });
+    const weatherSnapshot = createSnapshot({
+      syncedAt: '2026-04-10T12:06:00.000Z',
+      weather: [
+        {
+          date: '2026-04-10',
+          temperatureMin: 10,
+          temperatureMax: 18,
+          temperatureDisplay: '18C / 10C',
+          conditionCode: 0,
+          conditionLabel: 'Sunny',
+          precipitationChance: 10,
+          iconKey: 'sunny',
+        },
+      ],
+    });
+    const stopAgendaLoop = vi.fn();
+    const stopAgendaLoopAfterSettings = vi.fn();
+    const stopWeatherLoop = vi.fn();
+    const stopWeatherLoopAfterSettings = vi.fn();
+
+    getInitialSnapshot.mockReturnValue(startupSnapshot);
+    refreshSnapshot.mockResolvedValue(refreshedSnapshot);
+    refreshWeatherOnly.mockResolvedValue(weatherSnapshot);
+    createSerializedRefresh.mockImplementation((refresh: () => Promise<Snapshot>, options?: {
+      onSnapshot?: (snapshot: Snapshot) => void;
+      onError?: (error: unknown) => void;
+    }) => {
+      return vi.fn(async () => {
+        const snapshot = await refresh();
+        options?.onSnapshot?.(snapshot);
+      });
+    });
+    startRefreshLoop
+      .mockReturnValueOnce(stopAgendaLoop)
+      .mockReturnValueOnce(stopAgendaLoopAfterSettings);
+    startWeatherRefreshLoop
+      .mockReturnValueOnce(stopWeatherLoop)
+      .mockReturnValueOnce(stopWeatherLoopAfterSettings);
+
+    await loadMain();
+
+    await waitFor(() => {
+      expect(startRefreshLoop).toHaveBeenCalledTimes(1);
+      expect(startWeatherRefreshLoop).toHaveBeenCalledTimes(1);
+      expect(refreshSnapshot).toHaveBeenCalledTimes(1);
+    });
+
+    const onSettingsChanged = bootPlugin.mock.calls[0][0].onSettingsChanged as () => Promise<void>;
+    const weatherRefresh = startWeatherRefreshLoop.mock.calls[0][0] as () => Promise<void>;
+
+    await act(async () => {
+      await weatherRefresh();
+    });
+
+    expect(refreshWeatherOnly).toHaveBeenCalledWith({ currentSnapshot: refreshedSnapshot });
+    expect(latestAgendaAppProps?.snapshot).toEqual(weatherSnapshot);
+
+    await act(async () => {
+      await onSettingsChanged();
+    });
+
+    expect(stopAgendaLoop).toHaveBeenCalledTimes(1);
+    expect(stopWeatherLoop).toHaveBeenCalledTimes(1);
+    expect(startRefreshLoop).toHaveBeenCalledTimes(2);
+    expect(startWeatherRefreshLoop).toHaveBeenCalledTimes(2);
+    expect(refreshSnapshot).toHaveBeenCalledTimes(2);
+
+    await unmountMain();
+
+    expect(stopAgendaLoopAfterSettings).toHaveBeenCalledTimes(1);
+    expect(stopWeatherLoopAfterSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it('merges a late weather-only refresh into the latest full snapshot without restoring stale events tasks or errors', async () => {
+    const startupSnapshot = createSnapshot({
+      events: [
+        {
+          id: 'event-startup',
+          sourceUrl: 'https://example.com/startup.ics',
+          calendarName: 'Startup',
+          title: 'Startup event',
+          start: '2026-04-10T09:00:00.000Z',
+          end: '2026-04-10T10:00:00.000Z',
+          allDay: false,
+          location: '',
+          description: '',
+        },
+      ],
+      tasks: [
+        {
+          id: 'startup-task',
+          title: 'Startup task',
+          date: '2026-04-10',
+          marker: 'TODO',
+          pageName: '2026-04-10',
+          pageOriginalName: 'Apr 10th, 2026',
+          blockUuid: 'startup-task',
+          priority: '',
+          scheduled: '',
+          deadline: '',
+        },
+      ],
+      errors: [{ sourceUrl: 'https://example.com/startup.ics', message: 'startup warning' }],
+      weather: [],
+      weatherLocation: null,
+      syncedAt: '2026-04-10T12:00:00.000Z',
+    });
+    const latestFullSnapshot = createSnapshot({
+      events: [
+        {
+          id: 'event-latest',
+          sourceUrl: 'https://example.com/latest.ics',
+          calendarName: 'Latest',
+          title: 'Latest event',
+          start: '2026-04-10T11:00:00.000Z',
+          end: '2026-04-10T12:00:00.000Z',
+          allDay: false,
+          location: '',
+          description: '',
+        },
+      ],
+      tasks: [
+        {
+          id: 'latest-task',
+          title: 'Latest task',
+          date: '2026-04-10',
+          marker: 'NOW',
+          pageName: '2026-04-10',
+          pageOriginalName: 'Apr 10th, 2026',
+          blockUuid: 'latest-task',
+          priority: 'A',
+          scheduled: '',
+          deadline: '',
+        },
+      ],
+      errors: [{ sourceUrl: 'https://example.com/latest.ics', message: 'latest warning' }],
+      weather: [],
+      weatherLocation: null,
+      syncedAt: '2026-04-10T12:05:00.000Z',
+    });
+    const lateWeatherSnapshot = createSnapshot({
+      events: startupSnapshot.events,
+      tasks: startupSnapshot.tasks,
+      errors: startupSnapshot.errors,
+      weather: [
+        {
+          date: '2026-04-10',
+          temperatureMin: 10,
+          temperatureMax: 18,
+          temperatureDisplay: '18C / 10C',
+          conditionCode: 0,
+          conditionLabel: 'Sunny',
+          precipitationChance: 10,
+          iconKey: 'sunny',
+        },
+      ],
+      weatherLocation: {
+        query: 'Paris',
+        resolvedName: 'Paris',
+        latitude: 48.8566,
+        longitude: 2.3522,
+      },
+      syncedAt: '2026-04-10T12:06:00.000Z',
+    });
+    const weatherDeferred = createDeferredPromise<Snapshot>();
+
+    getInitialSnapshot.mockReturnValue(startupSnapshot);
+    refreshSnapshot
+      .mockResolvedValueOnce(startupSnapshot)
+      .mockResolvedValueOnce(latestFullSnapshot);
+    refreshWeatherOnly.mockImplementationOnce(() => weatherDeferred.promise);
+    createSerializedRefresh.mockImplementation((refresh: () => Promise<Snapshot>, options?: {
+      onSnapshot?: (snapshot: Snapshot) => void;
+      onError?: (error: unknown) => void;
+    }) => {
+      return vi.fn(async () => {
+        try {
+          const snapshot = await refresh();
+          options?.onSnapshot?.(snapshot);
+        } catch (error) {
+          options?.onError?.(error);
+        }
+      });
+    });
+
+    await loadMain();
+
+    await waitFor(() => {
+      expect(refreshSnapshot).toHaveBeenCalledTimes(1);
+      expect(latestAgendaAppProps?.snapshot).toEqual(startupSnapshot);
+    });
+
+    const weatherRefresh = startWeatherRefreshLoop.mock.calls[0][0] as () => Promise<void>;
+
+    await act(async () => {
+      void weatherRefresh();
+    });
+
+    expect(refreshWeatherOnly).toHaveBeenCalledWith({ currentSnapshot: startupSnapshot });
+
+    await act(async () => {
+      await latestAgendaAppProps?.onRefresh?.();
+    });
+
+    expect(latestAgendaAppProps?.snapshot).toEqual(latestFullSnapshot);
+
+    await act(async () => {
+      weatherDeferred.resolve(lateWeatherSnapshot);
+      await weatherDeferred.promise;
+    });
+
+    expect(latestAgendaAppProps?.snapshot).toEqual({
+      ...latestFullSnapshot,
+      weather: lateWeatherSnapshot.weather,
+      weatherLocation: lateWeatherSnapshot.weatherLocation,
+      syncedAt: lateWeatherSnapshot.syncedAt,
+    });
+  });
+
+  it('opens the matching journal in the sidebar and closes the panel on date double click', async () => {
+    const page = {
+      uuid: 'page-1',
+    };
+
+    createSerializedRefresh.mockReturnValue(vi.fn());
+    vi.mocked(logseq.Editor.getPage).mockResolvedValue(page as never);
+
+    await loadMain();
+
+    await act(async () => {
+      await latestAgendaAppProps?.onDateDoubleClick?.(new Date('2026-04-10T12:00:00.000Z'));
+    });
+
+    expect(logseq.App.getUserConfigs).toHaveBeenCalledTimes(1);
+    expect(logseq.Editor.getPage).toHaveBeenCalledWith('2026-04-10');
+    expect(logseq.Editor.openInRightSidebar).toHaveBeenCalledWith('page-1');
+    expect(logseq.hideMainUI).toHaveBeenCalledWith({ restoreEditingCursor: true });
+    expect(setMainUiVisible).toHaveBeenCalledWith(false);
+  });
+
+  it('warns and keeps the panel open when no matching journal page exists', async () => {
+    createSerializedRefresh.mockReturnValue(vi.fn());
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await loadMain();
+
+    await act(async () => {
+      await latestAgendaAppProps?.onDateDoubleClick?.(new Date('2026-04-10T12:00:00.000Z'));
+    });
+
+    expect(logseq.Editor.getPage).toHaveBeenCalledWith('2026-04-10');
+    expect(logseq.Editor.openInRightSidebar).not.toHaveBeenCalled();
+    expect(logseq.hideMainUI).not.toHaveBeenCalled();
+    expect(setMainUiVisible).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith('[logseq-google-agenda] Journal page not found', {
+      pageName: '2026-04-10',
+    });
+
+    warnSpy.mockRestore();
+  });
+
+  it('logs an error and keeps the panel open when opening a journal fails', async () => {
+    createSerializedRefresh.mockReturnValue(vi.fn());
+    const error = new Error('config failed');
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    vi.mocked(logseq.App.getUserConfigs).mockRejectedValue(error);
+
+    await loadMain();
+
+    await act(async () => {
+      await latestAgendaAppProps?.onDateDoubleClick?.(new Date('2026-04-10T12:00:00.000Z'));
+    });
+
+    expect(logseq.Editor.getPage).not.toHaveBeenCalled();
+    expect(logseq.Editor.openInRightSidebar).not.toHaveBeenCalled();
+    expect(logseq.hideMainUI).not.toHaveBeenCalled();
+    expect(setMainUiVisible).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith('[logseq-google-agenda] Failed to open journal in sidebar', error);
+
+    errorSpy.mockRestore();
   });
 
 
@@ -317,5 +709,37 @@ describe('main wiring', () => {
     });
 
     logSpy.mockRestore();
+  });
+
+  it('cleans up the keydown listener across unmount and repeated module loads', async () => {
+    createSerializedRefresh.mockReturnValue(vi.fn());
+    const addEventListenerSpy = vi.spyOn(document, 'addEventListener');
+    const removeEventListenerSpy = vi.spyOn(document, 'removeEventListener');
+
+    await loadMain();
+
+    const firstKeydownHandler = addEventListenerSpy.mock.calls.find(([type]) => type === 'keydown')?.[1];
+
+    expect(addEventListenerSpy.mock.calls.filter(([type]) => type === 'keydown')).toHaveLength(1);
+
+    await unmountMain();
+
+    expect(removeEventListenerSpy).toHaveBeenCalledWith('keydown', firstKeydownHandler, false);
+
+    vi.resetModules();
+    await loadMain();
+
+    expect(addEventListenerSpy.mock.calls.filter(([type]) => type === 'keydown')).toHaveLength(2);
+
+    await act(async () => {
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Escape',
+          bubbles: true,
+        }),
+      );
+    });
+
+    expect(logseq.hideMainUI).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,4 +1,9 @@
-import type { AgendaTask, CalendarEvent } from '../calendar/types';
+import type {
+  AgendaTask,
+  CalendarEvent,
+  WeatherDay,
+  WeatherLocation,
+} from '../calendar/types';
 import type { FeedError } from './ical';
 
 export const SNAPSHOT_KEY = 'syncSnapshot';
@@ -6,6 +11,8 @@ export const SNAPSHOT_KEY = 'syncSnapshot';
 export type Snapshot = {
   events: CalendarEvent[];
   tasks: AgendaTask[];
+  weather: WeatherDay[];
+  weatherLocation: WeatherLocation | null;
   errors: FeedError[];
   syncedAt: string;
 };
@@ -13,6 +20,15 @@ export type Snapshot = {
 type SnapshotStorage = {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
+};
+
+type SnapshotRecord = Record<string, unknown> & {
+  events: unknown[];
+  errors: unknown[];
+  syncedAt: string;
+  tasks?: unknown;
+  weather?: unknown;
+  weatherLocation?: unknown;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -58,30 +74,64 @@ function isAgendaTask(value: unknown): value is AgendaTask {
   );
 }
 
-function isSnapshot(value: unknown): value is Snapshot {
+function isWeatherDay(value: unknown): value is WeatherDay {
   return (
     isRecord(value) &&
-    Array.isArray((value as Snapshot).events) &&
-    (value as Snapshot).events.every(isCalendarEvent) &&
-    Array.isArray((value as Snapshot).tasks) &&
-    (value as Snapshot).tasks.every(isAgendaTask) &&
-    Array.isArray((value as Snapshot).errors) &&
-    (value as Snapshot).errors.every(isFeedError) &&
-    typeof (value as Snapshot).syncedAt === 'string'
+    typeof value.date === 'string' &&
+    typeof value.temperatureMin === 'number' &&
+    typeof value.temperatureMax === 'number' &&
+    typeof value.temperatureDisplay === 'string' &&
+    typeof value.conditionCode === 'number' &&
+    typeof value.conditionLabel === 'string' &&
+    typeof value.precipitationChance === 'number' &&
+    typeof value.iconKey === 'string'
   );
 }
 
-type LegacySnapshot = Omit<Snapshot, 'tasks'>;
+function isWeatherLocation(value: unknown): value is WeatherLocation {
+  return (
+    isRecord(value) &&
+    typeof value.query === 'string' &&
+    typeof value.resolvedName === 'string' &&
+    typeof value.latitude === 'number' &&
+    typeof value.longitude === 'number'
+  );
+}
+
+function isSnapshotBase(
+  value: unknown,
+): value is SnapshotRecord {
+  return (
+    isRecord(value) &&
+    Array.isArray(value.events) &&
+    value.events.every(isCalendarEvent) &&
+    Array.isArray(value.errors) &&
+    value.errors.every(isFeedError) &&
+    typeof value.syncedAt === 'string'
+  );
+}
+
+function isSnapshot(value: unknown): value is Snapshot {
+  return (
+    isSnapshotBase(value) &&
+    Array.isArray(value.tasks) &&
+    value.tasks.every(isAgendaTask) &&
+    Array.isArray(value.weather) &&
+    value.weather.every(isWeatherDay) &&
+    (value.weatherLocation === null || isWeatherLocation(value.weatherLocation))
+  );
+}
+
+type LegacySnapshot = Pick<Snapshot, 'events' | 'errors' | 'syncedAt'> & {
+  tasks?: AgendaTask[];
+};
 
 function isLegacySnapshot(value: unknown): value is LegacySnapshot {
   return (
-    isRecord(value) &&
-    !('tasks' in value) &&
-    Array.isArray((value as LegacySnapshot).events) &&
-    (value as LegacySnapshot).events.every(isCalendarEvent) &&
-    Array.isArray((value as LegacySnapshot).errors) &&
-    (value as LegacySnapshot).errors.every(isFeedError) &&
-    typeof (value as LegacySnapshot).syncedAt === 'string'
+    isSnapshotBase(value) &&
+    (!('tasks' in value) || (Array.isArray(value.tasks) && value.tasks.every(isAgendaTask))) &&
+    !('weather' in value) &&
+    !('weatherLocation' in value)
   );
 }
 
@@ -102,7 +152,9 @@ export function loadSnapshot(storage: SnapshotStorage): Snapshot | null {
     if (isLegacySnapshot(parsed)) {
       return {
         ...parsed,
-        tasks: [],
+        tasks: parsed.tasks ?? [],
+        weather: [],
+        weatherLocation: null,
       };
     }
 

@@ -94,13 +94,6 @@ button {
   white-space: nowrap;
 }
 
-.agenda-toolbar__button--static {
-  display: inline-flex;
-  align-items: center;
-  background: #f3f4f6;
-  cursor: default;
-}
-
 .agenda-toolbar__group--views .agenda-toolbar__button {
   min-height: 32px;
   border: 0;
@@ -129,16 +122,6 @@ button {
 }
 
 .agenda-toolbar__icon-button--nav {
-  color: #374151;
-}
-
-.agenda-toolbar__icon-button--today {
-  width: auto;
-  flex: 0 0 auto;
-  padding: 0 12px;
-  border-radius: 8px;
-  font-size: 0.8rem;
-  font-weight: 500;
   color: #374151;
 }
 
@@ -297,10 +280,31 @@ button {
 }
 
 .agenda-day__number {
-  width: 100%;
   font-size: 0.95rem;
   font-weight: 500;
-  text-align: right;
+}
+
+.agenda-day__number-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.agenda-day__weather-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 999px;
+  background: #f3f4f6;
+  color: #4b5563;
+  font-size: 0.8rem;
+  font-weight: 700;
+  line-height: 1;
 }
 
 .agenda-day__events {
@@ -361,8 +365,14 @@ button {
 }
 
 .agenda-sidebar__resize-handle:hover,
+.agenda-sidebar__resize-handle:focus-visible,
 .agenda-sidebar--resizing .agenda-sidebar__resize-handle {
   background: #e5e7eb;
+}
+
+.agenda-sidebar__resize-handle:focus-visible {
+  outline: 2px solid #93c5fd;
+  outline-offset: -2px;
 }
 
 .agenda-sidebar__resize-grip {
@@ -374,6 +384,7 @@ button {
 }
 
 .agenda-sidebar__resize-handle:hover .agenda-sidebar__resize-grip,
+.agenda-sidebar__resize-handle:focus-visible .agenda-sidebar__resize-grip,
 .agenda-sidebar--resizing .agenda-sidebar__resize-grip {
   background: #9ca3af;
 }
@@ -381,6 +392,50 @@ button {
 .agenda-sidebar__selected {
   padding: 20px;
   overflow-y: auto;
+}
+
+.agenda-sidebar__selected-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.agenda-sidebar__weather {
+  flex: 0 0 auto;
+  text-align: right;
+}
+
+.agenda-sidebar__weather-temperature,
+.agenda-sidebar__weather-detail {
+  margin: 0;
+}
+
+.agenda-sidebar__weather-temperature {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #20222b;
+}
+
+.agenda-sidebar__weather-detail {
+  margin-top: 2px;
+  color: #6b7280;
+  font-size: 0.78rem;
+}
+
+.agenda-sidebar__weather-condition {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.agenda-sidebar__weather-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  line-height: 1;
 }
 
 .agenda-sidebar__upcoming {

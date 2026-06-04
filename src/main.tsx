@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { format } from 'date-fns';
 import { AgendaApp } from './app/AgendaApp';
@@ -10,40 +10,45 @@ import {
   getInitialSnapshot,
   refreshSnapshot,
   refreshTasksOnly,
+  refreshWeatherOnly,
   setMainUiVisible,
   startRefreshLoop,
+  startWeatherRefreshLoop,
 } from './plugin';
 import './styles.css';
+
+function mergeWeatherSnapshot(currentSnapshot: Snapshot | null, weatherSnapshot: Snapshot): Snapshot {
+  return {
+    events: currentSnapshot?.events ?? weatherSnapshot.events,
+    tasks: currentSnapshot?.tasks ?? weatherSnapshot.tasks,
+    errors: currentSnapshot?.errors ?? weatherSnapshot.errors,
+    weather: weatherSnapshot.weather,
+    weatherLocation: weatherSnapshot.weatherLocation,
+    syncedAt: weatherSnapshot.syncedAt,
+  };
+}
 
 function hideAgendaPanel() {
   logseq.hideMainUI({ restoreEditingCursor: true });
   setMainUiVisible(false);
 }
 
-// In-iframe keyboard handler: Logseq's registerCommandShortcut only fires
-// on the host window.  When the plugin iframe has focus (after showMainUI),
-// keyboard events never reach the host, so the toggle shortcut never fires.
-// We listen inside the iframe and close the panel ourselves.
-document.addEventListener(
-  'keydown',
-  (e: KeyboardEvent) => {
-    const isEscape = e.key === 'Escape';
-    const isToggle =
-      (e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'g';
+function handlePanelKeydown(e: KeyboardEvent) {
+  const isEscape = e.key === 'Escape';
+  const isToggle =
+    (e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'g';
 
-    if (isEscape || isToggle) {
-      console.log('[logseq-google-agenda] In-iframe keydown close', {
-        key: e.key,
-        isEscape,
-        isToggle,
-      });
-      hideAgendaPanel();
-      e.stopPropagation();
-      e.preventDefault();
-    }
-  },
-  false,
-);
+  if (isEscape || isToggle) {
+    console.log('[logseq-google-agenda] In-iframe keydown close', {
+      key: e.key,
+      isEscape,
+      isToggle,
+    });
+    hideAgendaPanel();
+    e.stopPropagation();
+    e.preventDefault();
+  }
+}
 
 async function openJournalInSidebar(date: Date) {
   console.log('[logseq-google-agenda] openJournalInSidebar called', { date: date.toISOString() });
@@ -74,6 +79,7 @@ function AgendaPluginRoot() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(() => getInitialSnapshot());
   const [isRefreshing, setIsRefreshing] = useState(false);
   const snapshotRef = useRef(snapshot);
+  const refreshSequenceRef = useRef(0);
   snapshotRef.current = snapshot;
 
   const [handleRefresh] = useState(() =>
@@ -88,14 +94,31 @@ function AgendaPluginRoot() {
     ),
   );
 
-  const trackRefresh = useCallback(async () => {
+  const [handleWeatherRefresh] = useState(() =>
+    createSerializedRefresh(
+      () => refreshWeatherOnly({ currentSnapshot: snapshotRef.current }),
+      {
+        onSnapshot: (weatherSnapshot) => {
+          setSnapshot((currentSnapshot) => mergeWeatherSnapshot(currentSnapshot, weatherSnapshot));
+        },
+        onError: (error) => {
+          console.error('Failed to refresh weather', error);
+        },
+      },
+    ),
+  );
+
+  const trackRefresh = async () => {
+    const sequence = ++refreshSequenceRef.current;
     setIsRefreshing(true);
     try {
       await handleRefresh();
     } finally {
-      setIsRefreshing(false);
+      if (refreshSequenceRef.current === sequence) {
+        setIsRefreshing(false);
+      }
     }
-  }, [handleRefresh]);
+  };
 
   const [debouncedTaskRefresh] = useState(() =>
     createDebouncedCallback(async () => {
@@ -109,15 +132,28 @@ function AgendaPluginRoot() {
   );
 
   useEffect(() => {
+    // In-iframe keyboard handler: Logseq's registerCommandShortcut only fires
+    // on the host window. When the plugin iframe has focus, handle close keys here.
+    document.addEventListener('keydown', handlePanelKeydown, false);
+
+    return () => {
+      document.removeEventListener('keydown', handlePanelKeydown, false);
+    };
+  }, []);
+
+  useEffect(() => {
     let isDisposed = false;
     let disposePlugin = () => {};
     let stopRefreshLoop = () => {};
+    let stopWeatherRefreshLoop = () => {};
 
     void bootPlugin({
       onRefresh: trackRefresh,
       onSettingsChanged: () => {
         stopRefreshLoop();
+        stopWeatherRefreshLoop();
         stopRefreshLoop = startRefreshLoop(trackRefresh);
+        stopWeatherRefreshLoop = startWeatherRefreshLoop(handleWeatherRefresh);
         return trackRefresh();
       },
       onTasksChanged: debouncedTaskRefresh,
@@ -130,6 +166,7 @@ function AgendaPluginRoot() {
 
         disposePlugin = dispose;
         stopRefreshLoop = startRefreshLoop(trackRefresh);
+        stopWeatherRefreshLoop = startWeatherRefreshLoop(handleWeatherRefresh);
         return trackRefresh();
       })
       .catch((error) => {
@@ -141,6 +178,7 @@ function AgendaPluginRoot() {
     return () => {
       isDisposed = true;
       stopRefreshLoop();
+      stopWeatherRefreshLoop();
       disposePlugin();
     };
   }, []);

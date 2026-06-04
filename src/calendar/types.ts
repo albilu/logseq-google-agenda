@@ -23,6 +23,24 @@ export type AgendaTask = {
   deadline: string;
 };
 
+export type WeatherDay = {
+  date: string;
+  temperatureMin: number;
+  temperatureMax: number;
+  temperatureDisplay: string;
+  conditionCode: number;
+  conditionLabel: string;
+  precipitationChance: number;
+  iconKey: string;
+};
+
+export type WeatherLocation = {
+  query: string;
+  resolvedName: string;
+  latitude: number;
+  longitude: number;
+};
+
 export type DayCell = {
   date: Date;
   dateKey: string;

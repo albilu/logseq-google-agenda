@@ -3,7 +3,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgendaTask } from './calendar/types';
 import type { Snapshot } from './sync/cache';
 import { SETTINGS_SCHEMA } from './logseq/settings';
-import { bootPlugin, createDebouncedCallback, createSerializedRefresh, getInitialSnapshot, refreshSnapshot, refreshTasksOnly, startRefreshLoop } from './plugin';
+vi.mock('./sync/weather', () => ({
+  refreshWeather: vi.fn(),
+}));
+
+import { refreshWeather } from './sync/weather';
+import { bootPlugin, createDebouncedCallback, createSerializedRefresh, getInitialSnapshot, refreshSnapshot, refreshTasksOnly, setMainUiVisible, startRefreshLoop } from './plugin';
 
 type StorageLike = {
   getItem(key: string): string | null;
@@ -29,11 +34,12 @@ type LogseqMock = {
 
 function createSnapshot(overrides: Partial<Snapshot> = {}): Snapshot {
   return {
-    events: [],
-    tasks: [],
-    errors: [],
-    syncedAt: '2026-04-10T12:00:00.000Z',
-    ...overrides,
+    events: overrides.events ?? [],
+    tasks: overrides.tasks ?? [],
+    weather: overrides.weather ?? [],
+    weatherLocation: overrides.weatherLocation ?? null,
+    errors: overrides.errors ?? [],
+    syncedAt: overrides.syncedAt ?? '2026-04-10T12:00:00.000Z',
   };
 }
 
@@ -71,6 +77,9 @@ function createDeferredPromise<T>() {
 }
 
 afterEach(() => {
+  setMainUiVisible(false);
+  delete (globalThis as { __logseqGoogleAgendaMainUiVisible?: boolean }).__logseqGoogleAgendaMainUiVisible;
+  vi.mocked(refreshWeather).mockReset();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -121,6 +130,150 @@ describe('getInitialSnapshot', () => {
 });
 
 describe('refreshSnapshot', () => {
+  it('includes weather in the full refresh when weatherCity is configured', async () => {
+    const storage: StorageLike = {
+      getItem: vi.fn(() => null),
+      setItem: vi.fn(),
+    };
+    const fetchImpl: typeof fetch = vi.fn(async () =>
+      new Response(
+        [
+          'BEGIN:VCALENDAR',
+          'VERSION:2.0',
+          'BEGIN:VEVENT',
+          'UID:event-1@example.com',
+          'DTSTAMP:20240501T120000Z',
+          'DTSTART:20240507T150000Z',
+          'DTEND:20240507T153000Z',
+          'SUMMARY:Standup',
+          'END:VEVENT',
+          'END:VCALENDAR',
+        ].join('\r\n'),
+      ),
+    ) as typeof fetch;
+
+    vi.mocked(refreshWeather).mockResolvedValue({
+      weather: [
+        {
+          date: '2024-05-07',
+          temperatureMin: 12,
+          temperatureMax: 20,
+          temperatureDisplay: '20C / 12C',
+          conditionCode: 1,
+          conditionLabel: 'Partly cloudy',
+          precipitationChance: 10,
+          iconKey: 'partly-cloudy',
+        },
+      ],
+      weatherLocation: {
+        query: 'Paris',
+        resolvedName: 'Paris',
+        latitude: 48.8566,
+        longitude: 2.3522,
+      },
+    });
+
+    const snapshot = await refreshSnapshot({
+      storage,
+      settings: {
+        feeds: JSON.stringify([
+          {
+            url: 'https://example.com/engineering.ics',
+            calendarName: 'Engineering',
+          },
+        ]),
+        refreshIntervalMinutes: 30,
+        weatherCity: 'Paris',
+        weatherRefreshIntervalMinutes: 90,
+      },
+      fetchImpl,
+    });
+
+    expect(refreshWeather).toHaveBeenCalledWith(expect.objectContaining({
+      city: 'Paris',
+      fetchImpl,
+    }));
+    expect(snapshot.weather).toEqual([
+      {
+        date: '2024-05-07',
+        temperatureMin: 12,
+        temperatureMax: 20,
+        temperatureDisplay: '20C / 12C',
+        conditionCode: 1,
+        conditionLabel: 'Partly cloudy',
+        precipitationChance: 10,
+        iconKey: 'partly-cloudy',
+      },
+    ]);
+    expect(snapshot.weatherLocation).toEqual({
+      query: 'Paris',
+      resolvedName: 'Paris',
+      latitude: 48.8566,
+      longitude: 2.3522,
+    });
+  });
+
+  it('keeps the full refresh best effort when weather refresh fails', async () => {
+    const storage: StorageLike = {
+      getItem: vi.fn(() => null),
+      setItem: vi.fn(),
+    };
+    const fetchImpl: typeof fetch = vi.fn(async () =>
+      new Response(
+        [
+          'BEGIN:VCALENDAR',
+          'VERSION:2.0',
+          'BEGIN:VEVENT',
+          'UID:event-1@example.com',
+          'DTSTAMP:20240501T120000Z',
+          'DTSTART:20240507T150000Z',
+          'DTEND:20240507T153000Z',
+          'SUMMARY:Standup',
+          'END:VEVENT',
+          'END:VCALENDAR',
+        ].join('\r\n'),
+      ),
+    ) as typeof fetch;
+    const reportError = vi.fn();
+    const weatherError = new Error('weather failed');
+
+    vi.mocked(refreshWeather).mockRejectedValue(weatherError);
+
+    const snapshot = await refreshSnapshot({
+      storage,
+      settings: {
+        feeds: JSON.stringify([
+          {
+            url: 'https://example.com/engineering.ics',
+            calendarName: 'Engineering',
+          },
+        ]),
+        refreshIntervalMinutes: 30,
+        weatherCity: 'Paris',
+        weatherRefreshIntervalMinutes: 90,
+      },
+      fetchImpl,
+      reportError,
+    });
+
+    expect(snapshot.events).toEqual([
+      {
+        id: 'event-1@example.com',
+        sourceUrl: 'https://example.com/engineering.ics',
+        calendarName: 'Engineering',
+        title: 'Standup',
+        start: '2024-05-07T15:00:00.000Z',
+        end: '2024-05-07T15:30:00.000Z',
+        allDay: false,
+        location: '',
+        description: '',
+      },
+    ]);
+    expect(snapshot.weather).toEqual([]);
+    expect(snapshot.weatherLocation).toBeNull();
+    expect(reportError).toHaveBeenCalledWith('Failed to refresh weather', weatherError);
+  });
+
   it('returns a snapshot that includes journal tasks loaded alongside calendar feeds', async () => {
     const storage: StorageLike = {
       getItem: vi.fn(() => null),
@@ -615,6 +768,59 @@ describe('startRefreshLoop', () => {
   });
 });
 
+describe('startWeatherRefreshLoop', () => {
+  it('schedules weather refreshes using the weather interval and returns a cleanup function', async () => {
+    const { startWeatherRefreshLoop } = await import('./plugin');
+    const onRefresh = vi.fn();
+    const intervalHandle = 42;
+    const setIntervalImpl = vi.fn<(handler: () => void, timeout: number) => number>(() => intervalHandle);
+    const clearIntervalImpl = vi.fn<(handle: number) => void>();
+
+    const stop = startWeatherRefreshLoop(onRefresh, {
+      settings: {
+        feeds: '[]',
+        refreshIntervalMinutes: 5,
+        weatherCity: 'Paris',
+        weatherRefreshIntervalMinutes: 90,
+      },
+      setIntervalImpl,
+      clearIntervalImpl,
+    });
+
+    expect(setIntervalImpl).toHaveBeenCalledWith(expect.any(Function), 90 * 60 * 1000);
+
+    const tick = setIntervalImpl.mock.calls[0][0];
+    tick();
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+
+    stop();
+    expect(clearIntervalImpl).toHaveBeenCalledWith(intervalHandle);
+  });
+
+  it('does not schedule weather refreshes when weatherCity is blank', async () => {
+    const { startWeatherRefreshLoop } = await import('./plugin');
+    const onRefresh = vi.fn();
+    const setIntervalImpl = vi.fn<(handler: () => void, timeout: number) => number>();
+    const clearIntervalImpl = vi.fn<(handle: number) => void>();
+
+    const stop = startWeatherRefreshLoop(onRefresh, {
+      settings: {
+        feeds: '[]',
+        refreshIntervalMinutes: 5,
+        weatherCity: '   ',
+        weatherRefreshIntervalMinutes: 90,
+      },
+      setIntervalImpl,
+      clearIntervalImpl,
+    });
+
+    expect(setIntervalImpl).not.toHaveBeenCalled();
+
+    stop();
+    expect(clearIntervalImpl).not.toHaveBeenCalled();
+  });
+});
+
 describe('bootPlugin', () => {
   it('registers a toggle command and shortcut that open then close the main UI', async () => {
     const logseqMock = createLogseqMock();
@@ -654,10 +860,9 @@ describe('bootPlugin', () => {
     await commandAction();
     await shortcutAction();
 
-    expect(logSpy).toHaveBeenNthCalledWith(1, '[logseq-google-agenda] Plugin boot start');
-    expect(logSpy).toHaveBeenNthCalledWith(2, '[logseq-google-agenda] Settings schema registered, mainUI zIndex set');
-    expect(logSpy).toHaveBeenNthCalledWith(
-      3,
+    expect(logSpy).toHaveBeenCalledWith('[logseq-google-agenda] Plugin boot start');
+    expect(logSpy).toHaveBeenCalledWith('[logseq-google-agenda] Settings schema registered, mainUI zIndex set');
+    expect(logSpy).toHaveBeenCalledWith(
       '[logseq-google-agenda] Open command registered',
       {
         commandKey: 'logseq-google-agenda-open',
@@ -665,8 +870,7 @@ describe('bootPlugin', () => {
         shortcutKey: 'logseq-google-agenda-open-shortcut',
       },
     );
-    expect(logSpy).toHaveBeenNthCalledWith(
-      4,
+    expect(logSpy).toHaveBeenCalledWith(
       '[logseq-google-agenda] Refresh command registered',
       {
         commandKey: 'logseq-google-agenda-refresh',
@@ -674,22 +878,21 @@ describe('bootPlugin', () => {
         shortcutKey: 'logseq-google-agenda-refresh-shortcut',
       },
     );
-    expect(logSpy).toHaveBeenNthCalledWith(5, '[logseq-google-agenda] Open command handler start');
-    expect(logSpy).toHaveBeenNthCalledWith(6, '[logseq-google-agenda] Toggle state evaluated', {
+    expect(logSpy).toHaveBeenCalledWith('[logseq-google-agenda] Open command handler start');
+    expect(logSpy).toHaveBeenCalledWith('[logseq-google-agenda] Toggle state evaluated', {
       inMemoryVisible: false,
       windowVisible: false,
       resolvedVisible: false,
     });
-    expect(logSpy).toHaveBeenNthCalledWith(7, '[logseq-google-agenda] Calling showMainUI', { autoFocus: true });
-    expect(logSpy).toHaveBeenNthCalledWith(8, '[logseq-google-agenda] showMainUI completed', { autoFocus: true });
-    expect(logSpy).toHaveBeenNthCalledWith(9, '[logseq-google-agenda] Open command handler start');
-    expect(logSpy).toHaveBeenNthCalledWith(10, '[logseq-google-agenda] Toggle state evaluated', {
+    expect(logSpy).toHaveBeenCalledWith('[logseq-google-agenda] Toggle state evaluated', {
       inMemoryVisible: true,
       windowVisible: true,
       resolvedVisible: true,
     });
-    expect(logSpy).toHaveBeenNthCalledWith(11, '[logseq-google-agenda] Calling hideMainUI', { restoreEditingCursor: true });
-    expect(logSpy).toHaveBeenNthCalledWith(12, '[logseq-google-agenda] hideMainUI completed', { restoreEditingCursor: true });
+    expect(logSpy).toHaveBeenCalledWith('[logseq-google-agenda] Calling showMainUI', { autoFocus: true });
+    expect(logSpy).toHaveBeenCalledWith('[logseq-google-agenda] showMainUI completed', { autoFocus: true });
+    expect(logSpy).toHaveBeenCalledWith('[logseq-google-agenda] Calling hideMainUI', { restoreEditingCursor: true });
+    expect(logSpy).toHaveBeenCalledWith('[logseq-google-agenda] hideMainUI completed', { restoreEditingCursor: true });
     expect(logseqMock.showMainUI).toHaveBeenNthCalledWith(1, { autoFocus: true });
     expect(logseqMock.showMainUI).toHaveBeenCalledTimes(1);
     expect(logseqMock.hideMainUI).toHaveBeenNthCalledWith(1, { restoreEditingCursor: true });
@@ -875,12 +1078,32 @@ describe('refreshTasksOnly', () => {
         },
       ],
       errors: [{ sourceUrl: 'https://example.com/bad.ics', message: 'failed' }],
+      weather: [
+        {
+          date: '2024-05-07',
+          temperatureMin: 12,
+          temperatureMax: 20,
+          temperatureDisplay: '20C / 12C',
+          conditionCode: 1,
+          conditionLabel: 'Partly cloudy',
+          precipitationChance: 10,
+          iconKey: 'partly-cloudy',
+        },
+      ],
+      weatherLocation: {
+        query: 'Paris',
+        resolvedName: 'Paris',
+        latitude: 48.8566,
+        longitude: 2.3522,
+      },
     });
 
     const result = await refreshTasksOnly({ currentSnapshot, storage });
 
     expect(result.events).toEqual(currentSnapshot.events);
     expect(result.errors).toEqual(currentSnapshot.errors);
+    expect(result.weather).toEqual(currentSnapshot.weather);
+    expect(result.weatherLocation).toEqual(currentSnapshot.weatherLocation);
     expect(result.tasks).toEqual([
       {
         id: 'task-new',
@@ -916,6 +1139,214 @@ describe('refreshTasksOnly', () => {
     expect(result.events).toEqual([]);
     expect(result.errors).toEqual([]);
     expect(result.tasks).toEqual([]);
+  });
+});
+
+describe('refreshWeatherOnly', () => {
+  it('preserves events tasks and errors while updating only weather fields', async () => {
+    const { refreshWeatherOnly } = await import('./plugin');
+    const storage: StorageLike = {
+      getItem: vi.fn(() => null),
+      setItem: vi.fn(),
+    };
+    const currentSnapshot = createSnapshot({
+      events: [
+        {
+          id: 'event-1',
+          sourceUrl: 'https://example.com/cal.ics',
+          calendarName: 'Work',
+          title: 'Meeting',
+          start: '2024-05-07T09:00:00.000Z',
+          end: '2024-05-07T10:00:00.000Z',
+          allDay: false,
+          location: '',
+          description: '',
+        },
+      ],
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Review roadmap',
+          date: '2024-05-07',
+          marker: 'TODO',
+          pageName: '2024-05-07',
+          pageOriginalName: 'May 7th, 2024',
+          blockUuid: 'task-1',
+          priority: 'A',
+          scheduled: '2024-05-07',
+          deadline: '',
+        },
+      ],
+      errors: [{ sourceUrl: 'https://example.com/bad.ics', message: 'failed' }],
+      weather: [],
+      weatherLocation: null,
+      syncedAt: '2026-04-10T12:00:00.000Z',
+    });
+
+    vi.mocked(refreshWeather).mockResolvedValue({
+      weather: [
+        {
+          date: '2024-05-08',
+          temperatureMin: 14,
+          temperatureMax: 22,
+          temperatureDisplay: '22C / 14C',
+          conditionCode: 0,
+          conditionLabel: 'Sunny',
+          precipitationChance: 5,
+          iconKey: 'sunny',
+        },
+      ],
+      weatherLocation: {
+        query: 'Paris',
+        resolvedName: 'Paris',
+        latitude: 48.8566,
+        longitude: 2.3522,
+      },
+    });
+
+    const result = await refreshWeatherOnly({
+      currentSnapshot,
+      storage,
+      settings: {
+        feeds: '[]',
+        refreshIntervalMinutes: 15,
+        weatherCity: 'Paris',
+        weatherRefreshIntervalMinutes: 90,
+      },
+    });
+
+    expect(refreshWeather).toHaveBeenCalledWith(expect.objectContaining({ city: 'Paris' }));
+    expect(result.events).toEqual(currentSnapshot.events);
+    expect(result.tasks).toEqual(currentSnapshot.tasks);
+    expect(result.errors).toEqual(currentSnapshot.errors);
+    expect(result.weather).toEqual([
+      {
+        date: '2024-05-08',
+        temperatureMin: 14,
+        temperatureMax: 22,
+        temperatureDisplay: '22C / 14C',
+        conditionCode: 0,
+        conditionLabel: 'Sunny',
+        precipitationChance: 5,
+        iconKey: 'sunny',
+      },
+    ]);
+    expect(result.weatherLocation).toEqual({
+      query: 'Paris',
+      resolvedName: 'Paris',
+      latitude: 48.8566,
+      longitude: 2.3522,
+    });
+    expect(result.syncedAt).not.toBe(currentSnapshot.syncedAt);
+    expect(storage.setItem).toHaveBeenCalledWith('syncSnapshot', JSON.stringify(result));
+  });
+
+  it('preserves prior weather data when weather refresh fails', async () => {
+    const { refreshWeatherOnly } = await import('./plugin');
+    const storage: StorageLike = {
+      getItem: vi.fn(() => null),
+      setItem: vi.fn(),
+    };
+    const reportError = vi.fn();
+    const weatherError = new Error('weather failed');
+    const currentSnapshot = createSnapshot({
+      events: [
+        {
+          id: 'event-1',
+          sourceUrl: 'https://example.com/cal.ics',
+          calendarName: 'Work',
+          title: 'Meeting',
+          start: '2024-05-07T09:00:00.000Z',
+          end: '2024-05-07T10:00:00.000Z',
+          allDay: false,
+          location: '',
+          description: '',
+        },
+      ],
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Review roadmap',
+          date: '2024-05-07',
+          marker: 'TODO',
+          pageName: '2024-05-07',
+          pageOriginalName: 'May 7th, 2024',
+          blockUuid: 'task-1',
+          priority: 'A',
+          scheduled: '2024-05-07',
+          deadline: '',
+        },
+      ],
+      errors: [{ sourceUrl: 'https://example.com/bad.ics', message: 'failed' }],
+      weather: [
+        {
+          date: '2024-05-08',
+          temperatureMin: 14,
+          temperatureMax: 22,
+          temperatureDisplay: '22C / 14C',
+          conditionCode: 0,
+          conditionLabel: 'Sunny',
+          precipitationChance: 5,
+          iconKey: 'sunny',
+        },
+      ],
+      weatherLocation: {
+        query: 'Paris',
+        resolvedName: 'Paris',
+        latitude: 48.8566,
+        longitude: 2.3522,
+      },
+      syncedAt: '2026-04-10T12:00:00.000Z',
+    });
+
+    vi.mocked(refreshWeather).mockRejectedValue(weatherError);
+
+    const result = await refreshWeatherOnly({
+      currentSnapshot,
+      storage,
+      settings: {
+        feeds: '[]',
+        refreshIntervalMinutes: 15,
+        weatherCity: 'Paris',
+        weatherRefreshIntervalMinutes: 90,
+      },
+      reportError,
+    });
+
+    expect(result.events).toEqual(currentSnapshot.events);
+    expect(result.tasks).toEqual(currentSnapshot.tasks);
+    expect(result.errors).toEqual(currentSnapshot.errors);
+    expect(result.weather).toEqual(currentSnapshot.weather);
+    expect(result.weatherLocation).toEqual(currentSnapshot.weatherLocation);
+    expect(result.syncedAt).not.toBe(currentSnapshot.syncedAt);
+    expect(storage.setItem).toHaveBeenCalledWith('syncSnapshot', JSON.stringify(result));
+    expect(reportError).toHaveBeenCalledWith('Failed to refresh weather', weatherError);
+  });
+
+  it('logs when weather refresh is skipped because no city is configured', async () => {
+    const { refreshWeatherOnly } = await import('./plugin');
+    const storage: StorageLike = {
+      getItem: vi.fn(() => null),
+      setItem: vi.fn(),
+    };
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await refreshWeatherOnly({
+      currentSnapshot: createSnapshot(),
+      storage,
+      settings: {
+        feeds: '[]',
+        refreshIntervalMinutes: 15,
+        weatherCity: '   ',
+        weatherRefreshIntervalMinutes: 90,
+      },
+    });
+
+    expect(logSpy).toHaveBeenCalledWith('[logseq-google-agenda] Weather refresh skipped', {
+      reason: 'missing city',
+    });
+
+    logSpy.mockRestore();
   });
 });
 

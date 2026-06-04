@@ -1,9 +1,11 @@
-import { render, screen, within } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
 import { AgendaApp } from './AgendaApp';
-import type { AgendaTask, CalendarEvent } from '../calendar/types';
+import type { AgendaTask, CalendarEvent, WeatherDay } from '../calendar/types';
 import type { Snapshot } from '../sync/cache';
 
 function createEvent(overrides: Partial<CalendarEvent>): CalendarEvent {
@@ -23,11 +25,12 @@ function createEvent(overrides: Partial<CalendarEvent>): CalendarEvent {
 
 function createSnapshot(overrides: Partial<Snapshot> = {}): Snapshot {
   return {
-    events: [],
-    tasks: [],
-    errors: [],
-    syncedAt: '2026-04-10T12:00:00.000Z',
-    ...overrides,
+    events: overrides.events ?? [],
+    tasks: overrides.tasks ?? [],
+    weather: overrides.weather ?? [],
+    weatherLocation: overrides.weatherLocation ?? null,
+    errors: overrides.errors ?? [],
+    syncedAt: overrides.syncedAt ?? '2026-04-10T12:00:00.000Z',
   };
 }
 
@@ -47,7 +50,34 @@ function createTask(overrides: Partial<AgendaTask>): AgendaTask {
   };
 }
 
+function createWeatherDay(overrides: Partial<WeatherDay>): WeatherDay {
+  return {
+    date: '2026-04-15',
+    temperatureMin: 12,
+    temperatureMax: 20,
+    temperatureDisplay: '20C / 12C',
+    conditionCode: 1,
+    conditionLabel: 'Partly cloudy',
+    precipitationChance: 10,
+    iconKey: 'partly-cloudy',
+    ...overrides,
+  };
+}
+
 describe('AgendaApp', () => {
+  it('keeps the month-grid weather badge footprint while only enlarging the glyph', () => {
+    const styles = readFileSync(resolve(__dirname, '../styles.css'), 'utf8');
+    const weatherIconRuleMatch = styles.match(/\.agenda-day__weather-icon\s*\{([\s\S]*?)\}/);
+
+    expect(weatherIconRuleMatch).not.toBeNull();
+
+    const weatherIconRule = weatherIconRuleMatch?.[1] ?? '';
+
+    expect(weatherIconRule).toContain('width: 1.25rem;');
+    expect(weatherIconRule).toContain('height: 1.25rem;');
+    expect(weatherIconRule).toContain('font-size: 0.8rem;');
+  });
+
   it('renders the month calendar, sync banner, event overflow, and sidebar details', async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
@@ -69,8 +99,8 @@ describe('AgendaApp', () => {
     render(
       <AgendaApp
         snapshot={snapshot}
-        initialMonth={new Date('2026-04-01T00:00:00.000Z')}
-        today={new Date('2026-04-15T00:00:00.000Z')}
+        initialMonth={new Date(2026, 3, 1)}
+        today={new Date(2026, 3, 15)}
         onClose={onClose}
       />,
     );
@@ -156,8 +186,8 @@ describe('AgendaApp', () => {
     render(
       <AgendaApp
         snapshot={snapshot}
-        initialMonth={new Date('2026-04-01T00:00:00.000Z')}
-        today={new Date('2026-04-15T00:00:00.000Z')}
+        initialMonth={new Date(2026, 3, 1)}
+        today={new Date(2026, 3, 15)}
       />,
     );
 
@@ -207,8 +237,8 @@ describe('AgendaApp', () => {
     render(
       <AgendaApp
         snapshot={snapshot}
-        initialMonth={new Date('2026-04-01T00:00:00.000Z')}
-        today={new Date('2026-04-15T00:00:00.000Z')}
+        initialMonth={new Date(2026, 3, 1)}
+        today={new Date(2026, 3, 15)}
       />,
     );
 
@@ -222,60 +252,260 @@ describe('AgendaApp', () => {
     expect(within(selectedSection).queryByText(/^Priority$/)).not.toBeInTheDocument();
   });
 
+  it('renders weather in the month grid for today through the next seven days and shows selected-day details', async () => {
+    const user = userEvent.setup();
+
+    const snapshot = createSnapshot({
+      weatherLocation: {
+        query: 'Paris',
+        resolvedName: 'Paris, France',
+        latitude: 48.8566,
+        longitude: 2.3522,
+      },
+      weather: [
+        createWeatherDay({
+          date: '2026-04-14',
+          temperatureDisplay: '18C / 11C',
+          conditionLabel: 'Sunny',
+          precipitationChance: 5,
+          iconKey: 'sunny',
+        }),
+        createWeatherDay({
+          date: '2026-04-15',
+          temperatureDisplay: '20C / 12C',
+          conditionLabel: 'Partly cloudy',
+          precipitationChance: 10,
+          iconKey: 'partly-cloudy',
+        }),
+        createWeatherDay({
+          date: '2026-04-22',
+          temperatureDisplay: '16C / 9C',
+          conditionLabel: 'Rain',
+          precipitationChance: 70,
+          iconKey: 'rain',
+        }),
+        createWeatherDay({
+          date: '2026-04-23',
+          temperatureDisplay: '14C / 8C',
+          conditionLabel: 'Cloudy',
+          precipitationChance: 20,
+          iconKey: 'unknown',
+        }),
+      ],
+    });
+
+    const { container } = render(
+      <AgendaApp
+        snapshot={snapshot}
+        initialMonth={new Date(2026, 3, 1)}
+        today={new Date(2026, 3, 15)}
+      />,
+    );
+
+    const sidebar = screen.getByRole('complementary', { name: 'Day details' });
+    const selectedSection = within(sidebar).getByRole('region', { name: 'Selected day' });
+    const yesterdayButton = screen.getByRole('button', { name: /Tuesday, April 14, 2026/i });
+    const todayButton = screen.getByRole('button', { name: /Wednesday, April 15, 2026/i });
+    const lastForecastButton = screen.getByRole('button', { name: /Wednesday, April 22, 2026/i });
+    const outOfRangeButton = screen.getByRole('button', { name: /Thursday, April 23, 2026/i });
+    const noWeatherButton = screen.getByRole('button', { name: /Friday, April 24, 2026/i });
+
+    expect(container.querySelectorAll('.agenda-day__weather-icon')).toHaveLength(2);
+    expect(within(todayButton).getByLabelText('Partly cloudy')).toBeInTheDocument();
+    expect(within(todayButton).getByText('⛅')).toBeInTheDocument();
+    expect(within(lastForecastButton).getByLabelText('Rain')).toBeInTheDocument();
+    expect(within(lastForecastButton).getByText('🌧')).toBeInTheDocument();
+    expect(within(selectedSection).getByText('20C / 12C')).toBeInTheDocument();
+    const selectedWeatherDetail = within(selectedSection).getByText('Partly cloudy').closest('p');
+    const selectedWeatherIcon = selectedWeatherDetail?.firstElementChild as HTMLElement | null;
+    const selectedWeatherLabel = selectedWeatherIcon?.nextElementSibling as HTMLElement | null;
+
+    expect(selectedWeatherDetail).not.toBeNull();
+    expect(selectedWeatherIcon).not.toBeNull();
+    expect(selectedWeatherIcon).toHaveTextContent('⛅');
+    expect(selectedWeatherIcon).toHaveAttribute('aria-hidden', 'true');
+    expect(selectedWeatherLabel).not.toBeNull();
+    expect(selectedWeatherLabel).toHaveTextContent('Partly cloudy');
+    expect(within(selectedSection).getByText('Precipitation 10%')).toBeInTheDocument();
+    expect(within(yesterdayButton).queryByLabelText('Sunny')).not.toBeInTheDocument();
+    expect(within(outOfRangeButton).queryByLabelText('Cloudy')).not.toBeInTheDocument();
+
+    await user.click(outOfRangeButton);
+
+    expect(within(selectedSection).getByRole('heading', { name: 'April 23' })).toBeInTheDocument();
+    expect(within(selectedSection).getByText('14C / 8C')).toBeInTheDocument();
+    expect(within(selectedSection).getByText('Cloudy')).toBeInTheDocument();
+    expect(within(selectedSection).getByText('Cloudy').closest('p')?.querySelector('.agenda-sidebar__weather-icon')).toBeNull();
+    expect(within(selectedSection).getByText('Precipitation 20%')).toBeInTheDocument();
+
+    await user.click(noWeatherButton);
+
+    expect(within(selectedSection).getByRole('heading', { name: 'April 24' })).toBeInTheDocument();
+    expect(within(selectedSection).queryByText('14C / 8C')).not.toBeInTheDocument();
+    expect(within(selectedSection).queryByText('Cloudy')).not.toBeInTheDocument();
+    expect(within(selectedSection).queryByText('Precipitation 20%')).not.toBeInTheDocument();
+  });
+
   it('renders reference-like toolbar controls and arrow month navigation', async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
 
-    render(
-      <AgendaApp
-        initialMonth={new Date('2026-04-01T00:00:00.000Z')}
-        today={new Date('2026-04-15T00:00:00.000Z')}
-        onClose={onClose}
-      />,
-    );
+    try {
+      render(
+        <AgendaApp
+          initialMonth={new Date(2026, 3, 1)}
+          today={new Date(2026, 3, 15)}
+          onClose={onClose}
+        />,
+      );
 
-    const toolbar = screen.getByRole('banner');
-    const previousButton = within(toolbar).getByRole('button', { name: 'Previous month' });
-    const nextButton = within(toolbar).getByRole('button', { name: 'Next month' });
-    const closeButton = within(toolbar).getByRole('button', { name: 'Close' });
-    const todayButton = within(toolbar).getByRole('button', { name: 'Today' });
+      const toolbar = screen.getByRole('banner');
+      const previousButton = within(toolbar).getByRole('button', { name: 'Previous month' });
+      const nextButton = within(toolbar).getByRole('button', { name: 'Next month' });
+      const closeButton = within(toolbar).getByRole('button', { name: 'Close' });
+      const todayButton = within(toolbar).getByRole('button', { name: 'Today' });
 
-    expect(within(toolbar).queryByText('Month')).not.toBeInTheDocument();
-    expect(within(toolbar).getByRole('button', { name: 'Calendar' })).toBeInTheDocument();
-    expect(within(toolbar).getByRole('button', { name: 'Tasks' })).toBeInTheDocument();
-    expect(within(toolbar).queryByRole('button', { name: 'Refresh' })).not.toBeInTheDocument();
-    expect(closeButton).toBeInTheDocument();
-    expect(within(toolbar).queryByRole('button', { name: 'Prev' })).not.toBeInTheDocument();
-    expect(within(toolbar).queryByRole('button', { name: 'Next' })).not.toBeInTheDocument();
-    expect(previousButton).toHaveClass('agenda-toolbar__icon-button', 'agenda-toolbar__icon-button--nav');
-    expect(nextButton).toHaveClass('agenda-toolbar__icon-button', 'agenda-toolbar__icon-button--nav');
-    expect(closeButton).toHaveClass('agenda-toolbar__icon-button', 'agenda-toolbar__icon-button--close');
-    expect(todayButton).toHaveClass('agenda-toolbar__button');
+      expect(within(toolbar).queryByText('Month')).not.toBeInTheDocument();
+      expect(within(toolbar).getByRole('button', { name: 'Calendar' })).toBeInTheDocument();
+      expect(within(toolbar).getByRole('button', { name: 'Tasks' })).toBeInTheDocument();
+      expect(within(toolbar).queryByRole('button', { name: 'Refresh' })).not.toBeInTheDocument();
+      expect(closeButton).toBeInTheDocument();
+      expect(within(toolbar).queryByRole('button', { name: 'Prev' })).not.toBeInTheDocument();
+      expect(within(toolbar).queryByRole('button', { name: 'Next' })).not.toBeInTheDocument();
+      expect(previousButton).toHaveClass('agenda-toolbar__icon-button', 'agenda-toolbar__icon-button--nav');
+      expect(nextButton).toHaveClass('agenda-toolbar__icon-button', 'agenda-toolbar__icon-button--nav');
+      expect(closeButton).toHaveClass('agenda-toolbar__icon-button', 'agenda-toolbar__icon-button--close');
+      expect(todayButton).toHaveClass('agenda-toolbar__button');
 
-    await user.click(previousButton);
-    expect(screen.getByRole('heading', { name: 'March 2026' })).toBeInTheDocument();
+      await user.click(previousButton);
+      expect(screen.getByRole('heading', { name: 'March 2026' })).toBeInTheDocument();
 
-    await user.click(nextButton);
-    expect(screen.getByRole('heading', { name: 'April 2026' })).toBeInTheDocument();
+      await user.click(nextButton);
+      expect(screen.getByRole('heading', { name: 'April 2026' })).toBeInTheDocument();
 
-    await user.click(nextButton);
-    expect(screen.getByRole('heading', { name: 'May 2026' })).toBeInTheDocument();
+      await user.click(nextButton);
+      expect(screen.getByRole('heading', { name: 'May 2026' })).toBeInTheDocument();
 
-    await user.click(todayButton);
-    expect(screen.getByRole('heading', { name: 'April 2026' })).toBeInTheDocument();
-    expect(logSpy).toHaveBeenCalledWith('[logseq-google-agenda] Today button clicked', {
-      currentMonthBefore: '2026-05',
-      today: '2026-04-15',
+      await user.click(todayButton);
+      expect(screen.getByRole('heading', { name: 'April 2026' })).toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: /Wednesday, April 15, 2026/i }));
+      expect(logSpy).not.toHaveBeenCalled();
+
+      await user.click(closeButton);
+      expect(onClose).toHaveBeenCalledTimes(1);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('updates resize styling and panel size during sidebar pointer interactions', () => {
+    const originalSetPointerCapture = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'setPointerCapture');
+    const originalHasPointerCapture = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'hasPointerCapture');
+    const originalReleasePointerCapture = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'releasePointerCapture');
+    const setPointerCapture = vi.fn();
+    const releasePointerCapture = vi.fn();
+    const hasPointerCapture = vi.fn().mockReturnValue(false);
+
+    Object.defineProperty(HTMLElement.prototype, 'setPointerCapture', {
+      configurable: true,
+      value: setPointerCapture,
     });
-    expect(logSpy).toHaveBeenCalledWith('[logseq-google-agenda] Toolbar layout measured', expect.objectContaining({
-      hasPrimarySection: true,
-      hasSecondarySection: true,
-      hasTodayButton: true,
-    }));
+    Object.defineProperty(HTMLElement.prototype, 'hasPointerCapture', {
+      configurable: true,
+      value: hasPointerCapture,
+    });
+    Object.defineProperty(HTMLElement.prototype, 'releasePointerCapture', {
+      configurable: true,
+      value: releasePointerCapture,
+    });
 
-    await user.click(closeButton);
-    expect(onClose).toHaveBeenCalledTimes(1);
+    try {
+      render(
+        <AgendaApp
+          initialMonth={new Date(2026, 3, 1)}
+          today={new Date(2026, 3, 15)}
+        />,
+      );
+
+      const sidebar = screen.getByRole('complementary', { name: 'Day details' });
+      const selectedSection = within(sidebar).getByRole('region', { name: 'Selected day' });
+      const resizeHandle = within(sidebar).getByRole('separator', { name: 'Resize sidebar sections' });
+      const resizeGrip = within(resizeHandle).getByText('', { selector: '.agenda-sidebar__resize-grip' });
+
+      vi.spyOn(sidebar, 'getBoundingClientRect').mockReturnValue({
+        x: 0,
+        y: 0,
+        top: 100,
+        left: 0,
+        right: 320,
+        bottom: 500,
+        width: 320,
+        height: 400,
+        toJSON: () => ({}),
+      });
+
+      expect(sidebar).not.toHaveClass('agenda-sidebar--resizing');
+      expect(resizeHandle).toHaveAttribute('aria-orientation', 'horizontal');
+      expect(resizeHandle).toHaveAttribute('aria-valuemin', '15');
+      expect(resizeHandle).toHaveAttribute('aria-valuemax', '85');
+      expect(resizeHandle).toHaveAttribute('aria-valuenow', '40');
+      expect(selectedSection).toHaveStyle({ flex: '0 0 40%' });
+
+      fireEvent.pointerDown(resizeGrip, { pointerId: 7 });
+
+      expect(sidebar).toHaveClass('agenda-sidebar--resizing');
+      expect(setPointerCapture).toHaveBeenCalledTimes(1);
+      expect(setPointerCapture.mock.instances[0]).toBe(resizeHandle);
+      expect(setPointerCapture).toHaveBeenCalledWith(7);
+
+      hasPointerCapture.mockImplementation((pointerId: number) => pointerId === 7);
+
+      fireEvent.pointerMove(sidebar, { pointerId: 7, clientY: 380 });
+
+      expect(selectedSection).toHaveStyle({ flex: '0 0 70%' });
+
+      fireEvent.keyDown(resizeHandle, { key: 'ArrowUp' });
+
+      expect(resizeHandle).toHaveAttribute('aria-valuenow', '65');
+
+      fireEvent.keyDown(resizeHandle, { key: 'ArrowDown' });
+
+      expect(selectedSection).toHaveStyle({ flex: '0 0 70%' });
+      expect(resizeHandle).toHaveAttribute('aria-valuenow', '70');
+
+      fireEvent.pointerUp(sidebar, { pointerId: 7 });
+
+      expect(sidebar).not.toHaveClass('agenda-sidebar--resizing');
+      expect(hasPointerCapture.mock.instances[0]).toBe(resizeHandle);
+      expect(hasPointerCapture).toHaveBeenCalledWith(7);
+      expect(releasePointerCapture.mock.instances[0]).toBe(resizeHandle);
+      expect(releasePointerCapture).toHaveBeenCalledTimes(1);
+      expect(releasePointerCapture).toHaveBeenCalledWith(7);
+
+      fireEvent.pointerCancel(sidebar, { pointerId: 8 });
+
+      expect(releasePointerCapture).toHaveBeenCalledTimes(1);
+    } finally {
+      if (originalSetPointerCapture) {
+        Object.defineProperty(HTMLElement.prototype, 'setPointerCapture', originalSetPointerCapture);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'setPointerCapture');
+      }
+
+      if (originalHasPointerCapture) {
+        Object.defineProperty(HTMLElement.prototype, 'hasPointerCapture', originalHasPointerCapture);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'hasPointerCapture');
+      }
+
+      if (originalReleasePointerCapture) {
+        Object.defineProperty(HTMLElement.prototype, 'releasePointerCapture', originalReleasePointerCapture);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'releasePointerCapture');
+      }
+    }
   });
 
   it('keeps month navigation inside the target month when moving from a 31st', async () => {
@@ -301,8 +531,8 @@ describe('AgendaApp', () => {
     render(
       <AgendaApp
         snapshot={snapshot}
-        initialMonth={new Date('2026-01-01T00:00:00.000Z')}
-        today={new Date('2026-01-31T00:00:00.000Z')}
+        initialMonth={new Date(2026, 0, 1)}
+        today={new Date(2026, 0, 31)}
       />,
     );
 
@@ -346,8 +576,8 @@ describe('AgendaApp', () => {
     render(
       <AgendaApp
         snapshot={snapshot}
-        initialMonth={new Date('2026-04-01T00:00:00.000Z')}
-        today={new Date('2026-04-15T00:00:00.000Z')}
+        initialMonth={new Date(2026, 3, 1)}
+        today={new Date(2026, 3, 15)}
       />,
     );
 
@@ -391,8 +621,8 @@ describe('AgendaApp', () => {
     render(
       <AgendaApp
         snapshot={snapshot}
-        initialMonth={new Date('2026-03-01T00:00:00.000Z')}
-        today={new Date('2026-04-15T00:00:00.000Z')}
+        initialMonth={new Date(2026, 2, 1)}
+        today={new Date(2026, 3, 15)}
       />,
     );
 
@@ -419,8 +649,8 @@ describe('AgendaApp', () => {
             { sourceUrl: 'https://calendar.example.com/sales', message: 'Unauthorized' },
           ],
         })}
-        initialMonth={new Date('2026-04-01T00:00:00.000Z')}
-        today={new Date('2026-04-15T00:00:00.000Z')}
+        initialMonth={new Date(2026, 3, 1)}
+        today={new Date(2026, 3, 15)}
       />,
     );
 
@@ -436,8 +666,8 @@ describe('AgendaApp', () => {
     render(
       <AgendaApp
         snapshot={createSnapshot()}
-        initialMonth={new Date('2026-04-01T00:00:00.000Z')}
-        today={new Date('2026-04-15T00:00:00.000Z')}
+        initialMonth={new Date(2026, 3, 1)}
+        today={new Date(2026, 3, 15)}
         onDateDoubleClick={onDateDoubleClick}
       />,
     );
@@ -460,8 +690,8 @@ describe('AgendaApp', () => {
     render(
       <AgendaApp
         snapshot={createSnapshot()}
-        initialMonth={new Date('2026-04-01T00:00:00.000Z')}
-        today={new Date('2026-04-15T00:00:00.000Z')}
+        initialMonth={new Date(2026, 3, 1)}
+        today={new Date(2026, 3, 15)}
         onDateDoubleClick={onDateDoubleClick}
       />,
     );
@@ -480,8 +710,8 @@ describe('AgendaApp', () => {
     render(
       <AgendaApp
         snapshot={createSnapshot()}
-        initialMonth={new Date('2026-04-01T00:00:00.000Z')}
-        today={new Date('2026-04-15T00:00:00.000Z')}
+        initialMonth={new Date(2026, 3, 1)}
+        today={new Date(2026, 3, 15)}
         onDateDoubleClick={onDateDoubleClick}
       />,
     );
@@ -499,8 +729,8 @@ describe('AgendaApp', () => {
     render(
       <AgendaApp
         snapshot={createSnapshot()}
-        initialMonth={new Date('2026-04-01T00:00:00.000Z')}
-        today={new Date('2026-04-15T00:00:00.000Z')}
+        initialMonth={new Date(2026, 3, 1)}
+        today={new Date(2026, 3, 15)}
       />,
     );
 
@@ -509,6 +739,10 @@ describe('AgendaApp', () => {
 
     expect(resizeHandle).toBeInTheDocument();
     expect(resizeHandle).toHaveAttribute('aria-orientation', 'horizontal');
+    expect(resizeHandle).toHaveAttribute('tabindex', '0');
+    expect(resizeHandle).toHaveAttribute('aria-valuemin', '15');
+    expect(resizeHandle).toHaveAttribute('aria-valuemax', '85');
+    expect(resizeHandle).toHaveAttribute('aria-valuenow', '40');
     expect(resizeHandle).toHaveClass('agenda-sidebar__resize-handle');
   });
 

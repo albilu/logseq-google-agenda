@@ -9,8 +9,10 @@ Read-only Google Calendar and journal task month view for Logseq using public or
 - Show imported iCal events in `Calendar` and open Logseq journal-page tasks in `Tasks`.
 - Use a reference-inspired month layout with a consistent month grid for both tabs.
 - Show a selected-day sidebar with event title, calendar name, and time.
+- Show weather icons for the current day and next 7 days directly in the month grid.
+- Show selected-day weather details in the sidebar header instead of a tooltip.
 - Open or focus the plugin panel from the command palette or `Ctrl+Shift+G` / `Cmd+Shift+G`, and close it from the panel close control.
-- Refresh from the toolbar or the command palette.
+- Refresh from the command palette.
 - Refresh automatically on the configured interval and keep the last snapshot cached locally.
 - No OAuth flow, event editing, or calendar CRUD support.
 
@@ -34,6 +36,8 @@ The plugin registers these Logseq settings:
 
 - `Calendar feeds`: JSON array of feed objects with `url`, `calendarName`, and optional `color`.
 - `Refresh interval (minutes)`: positive number used for the automatic refresh loop.
+- `Weather city`: city name used for Open-Meteo geocoding; leave blank to disable weather.
+- `Weather refresh interval (minutes)`: positive number used for the automatic weather refresh loop.
 
 Example `Calendar feeds` value:
 
@@ -55,6 +59,8 @@ Notes:
 
 - The plugin reads calendar data from iCal feeds only.
 - Feed fetch failures are shown in the sync-issue banner without dropping healthy feeds.
+- Weather uses the public Open-Meteo geocoding and forecast APIs and does not require an API key.
+- Weather refresh is best-effort and does not block calendar or task refresh.
 - The current plugin entrypoint runs journal export during refresh and writes managed child blocks under `Google Agenda` on journal pages.
 
 ## Usage
@@ -63,8 +69,9 @@ Notes:
 - Use `Open Google Agenda` from the command palette or press `Ctrl+Shift+G` / `Cmd+Shift+G` to show and focus the panel, and use the panel close control to dismiss it.
 - Switch between the `Calendar` tab for imported iCal events and the `Tasks` tab for open tasks collected from Logseq journal pages.
 - Use `Prev`, `Next`, and `Today` to move around the reference-inspired month grid.
-- Click any day to inspect its events in the right sidebar.
-- Use `Refresh Google Agenda` from the command palette or the toolbar to fetch the latest data.
+- The current day and next 7 days can show weather icons in the month grid.
+- Click any day to inspect its events and weather details in the right sidebar header.
+- Use `Refresh Google Agenda` from the command palette to fetch the latest data.
 - Empty days show `No data` in the sidebar.
 
 ## Development

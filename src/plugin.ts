@@ -5,6 +5,7 @@ import { SETTINGS_SCHEMA, parseSettings } from './logseq/settings';
 import { loadJournalTasks } from './logseq/tasks';
 import { loadSnapshot, saveSnapshot, type Snapshot } from './sync/cache';
 import { refreshFeeds } from './sync/ical';
+import { refreshWeather } from './sync/weather';
 
 type SnapshotStorage = {
   getItem(key: string): string | null;
@@ -32,6 +33,14 @@ type StartRefreshLoopOptions = {
 type RefreshTasksOnlyOptions = {
   currentSnapshot?: Snapshot | null;
   storage?: SnapshotStorage;
+  reportError?: (message: string, error: unknown) => void;
+};
+
+type RefreshWeatherOnlyOptions = {
+  currentSnapshot?: Snapshot | null;
+  storage?: SnapshotStorage;
+  settings?: RawSettings;
+  fetchImpl?: typeof fetch;
   reportError?: (message: string, error: unknown) => void;
 };
 
@@ -95,6 +104,49 @@ function getTaskReader(): LogseqTaskReader | null {
   return editor;
 }
 
+function getLocale(): string {
+  return navigator.language || 'en-US';
+}
+
+async function loadWeather(
+  city: string,
+  fetchImpl: typeof fetch | undefined,
+  reportError: (message: string, error: unknown) => void,
+  fallback: Pick<Snapshot, 'weather' | 'weatherLocation'> = {
+    weather: [],
+    weatherLocation: null,
+  },
+): Promise<Pick<Snapshot, 'weather' | 'weatherLocation'>> {
+  if (!city) {
+    console.log('[logseq-google-agenda] Weather refresh skipped', {
+      reason: 'missing city',
+    });
+    return {
+      weather: [],
+      weatherLocation: null,
+    };
+  }
+
+  try {
+    const result = await refreshWeather({
+      city,
+      fetchImpl,
+      locale: getLocale(),
+    });
+
+    console.log('[logseq-google-agenda] Weather refresh result', {
+      city,
+      dayCount: result.weather.length,
+      hasLocation: result.weatherLocation !== null,
+    });
+
+    return result;
+  } catch (error) {
+    reportError('Failed to refresh weather', error);
+    return fallback;
+  }
+}
+
 async function refreshTasks(reportError: (message: string, error: unknown) => void): Promise<Snapshot['tasks']> {
   const reader = getTaskReader();
 
@@ -127,13 +179,15 @@ export async function refreshSnapshot({
     feeds: parsedSettings.feeds,
     refreshIntervalMinutes: parsedSettings.refreshIntervalMinutes,
   });
-  const [feedSnapshot, tasks] = await Promise.all([
+  const [feedSnapshot, tasks, weatherSnapshot] = await Promise.all([
     refreshFeeds(parsedSettings.feeds, fetchImpl),
     refreshTasks(reportError),
+    loadWeather(parsedSettings.weatherCity, fetchImpl, reportError),
   ]);
   const snapshot = {
     ...feedSnapshot,
     tasks,
+    ...weatherSnapshot,
   } satisfies Snapshot;
 
   console.log('[logseq-google-agenda] Refresh snapshot built', {
@@ -164,6 +218,32 @@ export async function refreshTasksOnly({
     events: currentSnapshot?.events ?? [],
     errors: currentSnapshot?.errors ?? [],
     tasks,
+    weather: currentSnapshot?.weather ?? [],
+    weatherLocation: currentSnapshot?.weatherLocation ?? null,
+    syncedAt: new Date().toISOString(),
+  };
+
+  saveSnapshot(storage, snapshot);
+  return snapshot;
+}
+
+export async function refreshWeatherOnly({
+  currentSnapshot = null,
+  storage = getBrowserStorage(),
+  settings,
+  fetchImpl,
+  reportError = console.error,
+}: RefreshWeatherOnlyOptions = {}): Promise<Snapshot> {
+  const parsedSettings = parseSettings(getCurrentSettings(settings));
+  const weatherSnapshot = await loadWeather(parsedSettings.weatherCity, fetchImpl, reportError, {
+    weather: currentSnapshot?.weather ?? [],
+    weatherLocation: currentSnapshot?.weatherLocation ?? null,
+  });
+  const snapshot: Snapshot = {
+    events: currentSnapshot?.events ?? [],
+    errors: currentSnapshot?.errors ?? [],
+    tasks: currentSnapshot?.tasks ?? [],
+    ...weatherSnapshot,
     syncedAt: new Date().toISOString(),
   };
 
@@ -251,6 +331,30 @@ export function startRefreshLoop(
     refreshIntervalMinutes: parsedSettings.refreshIntervalMinutes,
     intervalMs,
   });
+  const handle = setIntervalImpl(() => {
+    void onRefresh();
+  }, intervalMs);
+
+  return () => {
+    clearIntervalImpl(handle);
+  };
+}
+
+export function startWeatherRefreshLoop(
+  onRefresh: () => void | Promise<void>,
+  {
+    settings,
+    setIntervalImpl = window.setInterval.bind(window),
+    clearIntervalImpl = window.clearInterval.bind(window),
+  }: StartRefreshLoopOptions = {},
+): () => void {
+  const parsedSettings = parseSettings(getCurrentSettings(settings));
+
+  if (!parsedSettings.weatherCity) {
+    return () => {};
+  }
+
+  const intervalMs = parsedSettings.weatherRefreshIntervalMinutes * 60 * 1000;
   const handle = setIntervalImpl(() => {
     void onRefresh();
   }, intervalMs);

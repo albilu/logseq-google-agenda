@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { AgendaTask, CalendarEvent } from '../calendar/types';
+import type {
+  AgendaTask,
+  CalendarEvent,
+  WeatherDay,
+  WeatherLocation,
+} from '../calendar/types';
 import type { FeedError } from './ical';
 import { SNAPSHOT_KEY, loadSnapshot, saveSnapshot, type Snapshot } from './cache';
 
@@ -45,6 +50,26 @@ const tasks: AgendaTask[] = [
   },
 ];
 
+const weather: WeatherDay[] = [
+  {
+    date: '2024-05-06',
+    temperatureMin: 11,
+    temperatureMax: 18,
+    temperatureDisplay: '18C / 11C',
+    conditionCode: 61,
+    conditionLabel: 'Rain',
+    precipitationChance: 80,
+    iconKey: 'rain',
+  },
+];
+
+const weatherLocation: WeatherLocation = {
+  query: 'Amsterdam',
+  resolvedName: 'Amsterdam',
+  latitude: 52.3676,
+  longitude: 4.9041,
+};
+
 describe('SNAPSHOT_KEY', () => {
   it('uses the storage key for the cached sync snapshot', () => {
     expect(SNAPSHOT_KEY).toBe('syncSnapshot');
@@ -58,6 +83,8 @@ describe('loadSnapshot', () => {
         JSON.stringify({
           events,
           tasks,
+          weather,
+          weatherLocation,
           errors,
           syncedAt: '2024-05-06T12:00:00.000Z',
         }),
@@ -68,6 +95,8 @@ describe('loadSnapshot', () => {
     expect(loadSnapshot(storage)).toEqual<Snapshot>({
       events,
       tasks,
+      weather,
+      weatherLocation,
       errors,
       syncedAt: '2024-05-06T12:00:00.000Z',
     });
@@ -99,6 +128,8 @@ describe('loadSnapshot', () => {
             },
           ],
           tasks,
+          weather,
+          weatherLocation,
           errors,
           syncedAt: '2024-05-06T12:00:00.000Z',
         }),
@@ -110,6 +141,8 @@ describe('loadSnapshot', () => {
         JSON.stringify({
           events,
           tasks,
+          weather,
+          weatherLocation,
           errors: [
             {
               sourceUrl: 'https://example.com/broken.ics',
@@ -136,6 +169,8 @@ describe('loadSnapshot', () => {
               title: 'Review roadmap',
             },
           ],
+          weather,
+          weatherLocation,
           errors,
           syncedAt: '2024-05-06T12:00:00.000Z',
         }),
@@ -146,7 +181,45 @@ describe('loadSnapshot', () => {
     expect(loadSnapshot(storage)).toBeNull();
   });
 
-  it('loads legacy snapshots without tasks and normalizes them to an empty list', () => {
+  it('returns null when nested weather items are malformed', () => {
+    const malformedWeatherStorage: StorageLike = {
+      getItem: vi.fn(() =>
+        JSON.stringify({
+          events,
+          tasks,
+          weather: [
+            {
+              date: '2024-05-06',
+            },
+          ],
+          weatherLocation,
+          errors,
+          syncedAt: '2024-05-06T12:00:00.000Z',
+        }),
+      ),
+      setItem: vi.fn(),
+    };
+    const malformedWeatherLocationStorage: StorageLike = {
+      getItem: vi.fn(() =>
+        JSON.stringify({
+          events,
+          tasks,
+          weather,
+          weatherLocation: {
+            query: 'Amsterdam',
+          },
+          errors,
+          syncedAt: '2024-05-06T12:00:00.000Z',
+        }),
+      ),
+      setItem: vi.fn(),
+    };
+
+    expect(loadSnapshot(malformedWeatherStorage)).toBeNull();
+    expect(loadSnapshot(malformedWeatherLocationStorage)).toBeNull();
+  });
+
+  it('loads legacy snapshots without tasks or weather and normalizes them to empty values', () => {
     const storage: StorageLike = {
       getItem: vi.fn(() =>
         JSON.stringify({
@@ -161,6 +234,8 @@ describe('loadSnapshot', () => {
     expect(loadSnapshot(storage)).toEqual<Snapshot>({
       events,
       tasks: [],
+      weather: [],
+      weatherLocation: null,
       errors,
       syncedAt: '2024-05-06T12:00:00.000Z',
     });
@@ -188,6 +263,8 @@ describe('saveSnapshot', () => {
     const snapshot: Snapshot = {
       events,
       tasks,
+      weather,
+      weatherLocation,
       errors,
       syncedAt: '2024-05-06T12:00:00.000Z',
     };
@@ -207,6 +284,8 @@ describe('saveSnapshot', () => {
     const snapshot: Snapshot = {
       events,
       tasks,
+      weather,
+      weatherLocation,
       errors,
       syncedAt: '2024-05-06T12:00:00.000Z',
     };

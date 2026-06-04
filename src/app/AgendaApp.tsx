@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 
 import { buildMonthGrid, getOverflowCount, toDateKey } from '../calendar/month-grid';
 import { groupEventsByDate } from '../calendar/group-events';
-import type { AgendaTask, CalendarEvent } from '../calendar/types';
+import type { AgendaTask, CalendarEvent, WeatherDay } from '../calendar/types';
 import type { Snapshot } from '../sync/cache';
 
 type AgendaAppProps = {
@@ -17,6 +17,9 @@ type AgendaAppProps = {
 
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const VISIBLE_EVENT_LIMIT = 3;
+const MIN_SELECTED_PANEL_RATIO = 0.15;
+const MAX_SELECTED_PANEL_RATIO = 0.85;
+const KEYBOARD_RESIZE_STEP = 0.05;
 
 type AgendaMode = 'calendar' | 'tasks';
 
@@ -85,6 +88,25 @@ function formatSidebarHeading(date: Date) {
   return new Intl.DateTimeFormat('en-US', { month: 'long', day: 'numeric' }).format(date);
 }
 
+function getWeatherIcon(iconKey: WeatherDay['iconKey']) {
+  switch (iconKey) {
+    case 'sunny':
+      return '☀';
+    case 'partly-cloudy':
+      return '⛅';
+    case 'cloudy':
+      return '☁';
+    case 'rain':
+      return '🌧';
+    case 'snow':
+      return '❄';
+    case 'storm':
+      return '⛈';
+    default:
+      return null;
+  }
+}
+
 function formatShortDate(date: string | null | undefined) {
   if (!date) {
     return null;
@@ -132,6 +154,10 @@ function isCalendarEvent(item: AgendaItem): item is CalendarEvent {
   return 'start' in item;
 }
 
+function clampSelectedPanelRatio(ratio: number) {
+  return Math.min(Math.max(ratio, MIN_SELECTED_PANEL_RATIO), MAX_SELECTED_PANEL_RATIO);
+}
+
 const DOUBLE_CLICK_THRESHOLD_MS = 400;
 
 export function AgendaApp({
@@ -142,14 +168,12 @@ export function AgendaApp({
   onClose,
   onDateDoubleClick,
 }: AgendaAppProps) {
-  const toolbarRef = useRef<HTMLElement | null>(null);
-  const primarySectionRef = useRef<HTMLDivElement | null>(null);
-  const secondarySectionRef = useRef<HTMLDivElement | null>(null);
-  const todayButtonRef = useRef<HTMLButtonElement | null>(null);
   const lastClickRef = useRef<{ dateKey: string; time: number } | null>(null);
   const sidebarRef = useRef<HTMLElement | null>(null);
+  const resizeHandleRef = useRef<HTMLDivElement | null>(null);
   const isDraggingRef = useRef(false);
   const [selectedPanelRatio, setSelectedPanelRatio] = useState(0.4);
+  const [isDraggingSidebar, setIsDraggingSidebar] = useState(false);
   const normalizedToday = startOfDay(today);
   const initialDisplayedMonth = startOfDay(initialMonth ?? normalizedToday);
   const [currentMonth, setCurrentMonth] = useState(initialDisplayedMonth);
@@ -166,11 +190,34 @@ export function AgendaApp({
     () => groupTasksByDate(snapshot?.tasks ?? []),
     [snapshot?.tasks],
   );
+  const weatherByDate = useMemo(
+    () => (snapshot?.weather ?? []).reduce<Record<string, WeatherDay>>((days, day) => {
+      days[day.date] = day;
+      return days;
+    }, {}),
+    [snapshot?.weather],
+  );
   const monthGrid = useMemo(() => buildMonthGrid(currentMonth), [currentMonth]);
   const selectedDateKey = toDateKey(selectedDate);
   const selectedItems = mode === 'calendar'
     ? eventsByDate[selectedDateKey] ?? []
     : tasksByDate[selectedDateKey] ?? [];
+  const selectedWeather = weatherByDate[selectedDateKey] ?? null;
+  const selectedWeatherIcon = selectedWeather ? getWeatherIcon(selectedWeather.iconKey) : null;
+  const visibleWeatherDateKeys = useMemo(() => {
+    const keys = new Set<string>();
+
+    for (let i = 0; i < 8; i++) {
+      const date = new Date(
+        normalizedToday.getFullYear(),
+        normalizedToday.getMonth(),
+        normalizedToday.getDate() + i,
+      );
+      keys.add(toDateKey(date));
+    }
+
+    return keys;
+  }, [normalizedToday]);
 
   const upcomingDays = useMemo(() => {
     const days: Array<{ dateKey: string; label: string; items: AgendaItem[] }> = [];
@@ -200,7 +247,6 @@ export function AgendaApp({
     const last = lastClickRef.current;
 
     if (last && last.dateKey === dateKey && now - last.time < DOUBLE_CLICK_THRESHOLD_MS) {
-      console.log('[logseq-google-agenda] Double-click detected', { dateKey });
       onDateDoubleClick?.(date);
       lastClickRef.current = null;
     } else {
@@ -209,18 +255,16 @@ export function AgendaApp({
   }
 
   function handleToday() {
-    console.log('[logseq-google-agenda] Today button clicked', {
-      currentMonthBefore: `${currentMonth.getFullYear()}-${String(currentMonth.getMonth() + 1).padStart(2, '0')}`,
-      today: toDateKey(normalizedToday),
-    });
     setCurrentMonth(normalizedToday);
     setSelectedDate(normalizedToday);
   }
 
-  const handleResizePointerDown = useCallback((e: React.PointerEvent) => {
+  const handleResizePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
     isDraggingRef.current = true;
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    setIsDraggingSidebar(true);
+    resizeHandleRef.current = e.currentTarget;
+    e.currentTarget.setPointerCapture(e.pointerId);
   }, []);
 
   const handleResizePointerMove = useCallback((e: React.PointerEvent) => {
@@ -229,51 +273,57 @@ export function AgendaApp({
     const sidebar = sidebarRef.current;
     const rect = sidebar.getBoundingClientRect();
     const offsetY = e.clientY - rect.top;
-    const ratio = Math.min(Math.max(offsetY / rect.height, 0.15), 0.85);
-    setSelectedPanelRatio(ratio);
+    setSelectedPanelRatio(clampSelectedPanelRatio(offsetY / rect.height));
+  }, []);
+
+  const handleResizeKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
+    let nextRatio = selectedPanelRatio;
+
+    if (e.key === 'ArrowUp') {
+      nextRatio -= KEYBOARD_RESIZE_STEP;
+    } else if (e.key === 'ArrowDown') {
+      nextRatio += KEYBOARD_RESIZE_STEP;
+    } else if (e.key === 'Home') {
+      nextRatio = MIN_SELECTED_PANEL_RATIO;
+    } else if (e.key === 'End') {
+      nextRatio = MAX_SELECTED_PANEL_RATIO;
+    } else {
+      return;
+    }
+
+    e.preventDefault();
+    setSelectedPanelRatio(clampSelectedPanelRatio(nextRatio));
+  }, [selectedPanelRatio]);
+
+  const finishResizeDrag = useCallback((pointerId: number) => {
+    if (!isDraggingRef.current) {
+      return;
+    }
+
+    isDraggingRef.current = false;
+    setIsDraggingSidebar(false);
+
+    const handle = resizeHandleRef.current;
+
+    if (handle?.hasPointerCapture(pointerId)) {
+      handle.releasePointerCapture(pointerId);
+    }
+
+    resizeHandleRef.current = null;
   }, []);
 
   const handleResizePointerUp = useCallback((e: React.PointerEvent) => {
-    isDraggingRef.current = false;
-    (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-  }, []);
+    finishResizeDrag(e.pointerId);
+  }, [finishResizeDrag]);
 
-  useEffect(() => {
-    console.log('[logseq-google-agenda] Toolbar layout measured', {
-      hasPrimarySection: Boolean(primarySectionRef.current),
-      hasSecondarySection: Boolean(secondarySectionRef.current),
-      hasTodayButton: Boolean(todayButtonRef.current),
-      toolbarWidth: toolbarRef.current?.getBoundingClientRect().width ?? null,
-      primaryWidth: primarySectionRef.current?.getBoundingClientRect().width ?? null,
-      secondaryWidth: secondarySectionRef.current?.getBoundingClientRect().width ?? null,
-      todayLeft: todayButtonRef.current?.getBoundingClientRect().left ?? null,
-      todayRight: todayButtonRef.current?.getBoundingClientRect().right ?? null,
-    });
-  }, [currentMonth, mode]);
-
-  // Diagnostic: log every click target in the iframe to find what intercepts Today button clicks
-  useEffect(() => {
-    function handleDocClick(e: MouseEvent) {
-      const el = e.target as HTMLElement;
-      const rect = el.getBoundingClientRect();
-      console.log('[logseq-google-agenda] Document click', {
-        tag: el.tagName,
-        className: el.className,
-        id: el.id || null,
-        text: el.textContent?.slice(0, 40),
-        clickX: e.clientX,
-        clickY: e.clientY,
-        elRect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
-      });
-    }
-    document.addEventListener('click', handleDocClick, true);
-    return () => document.removeEventListener('click', handleDocClick, true);
-  }, []);
+  const handleResizePointerCancel = useCallback((e: React.PointerEvent) => {
+    finishResizeDrag(e.pointerId);
+  }, [finishResizeDrag]);
 
   return (
     <main className="agenda-shell">
-      <header ref={toolbarRef} className="agenda-toolbar">
-        <div ref={primarySectionRef} className="agenda-toolbar__section agenda-toolbar__section--primary">
+      <header className="agenda-toolbar">
+        <div className="agenda-toolbar__section agenda-toolbar__section--primary">
           <div className="agenda-toolbar__group agenda-toolbar__group--nav">
             <button
               type="button"
@@ -300,10 +350,9 @@ export function AgendaApp({
           ) : null}
         </div>
 
-        <div ref={secondarySectionRef} className="agenda-toolbar__section agenda-toolbar__section--secondary">
+        <div className="agenda-toolbar__section agenda-toolbar__section--secondary">
           <div className="agenda-toolbar__group agenda-toolbar__group--views" aria-label="Agenda mode">
             <button
-              ref={todayButtonRef}
               type="button"
               className="agenda-toolbar__button"
               onClick={handleToday}
@@ -361,6 +410,8 @@ export function AgendaApp({
                   const dayItems = mode === 'calendar'
                     ? eventsByDate[day.dateKey] ?? []
                     : tasksByDate[day.dateKey] ?? [];
+                  const dayWeather = visibleWeatherDateKeys.has(day.dateKey) ? weatherByDate[day.dateKey] : null;
+                  const weatherIcon = dayWeather ? getWeatherIcon(dayWeather.iconKey) : null;
                   const visibleItems = dayItems.slice(0, VISIBLE_EVENT_LIMIT);
                   const overflowCount = getOverflowCount(dayItems.length, VISIBLE_EVENT_LIMIT);
                   const isSelected = day.dateKey === selectedDateKey;
@@ -380,7 +431,18 @@ export function AgendaApp({
                       aria-pressed={isSelected}
                       onClick={() => handleDayClick(day.date, day.dateKey)}
                     >
-                      <span className="agenda-day__number">{day.date.getDate()}</span>
+                      <span className="agenda-day__number-row">
+                        <span className="agenda-day__number">{day.date.getDate()}</span>
+                        {weatherIcon ? (
+                          <span
+                            className="agenda-day__weather-icon"
+                            role="img"
+                            aria-label={dayWeather?.conditionLabel}
+                          >
+                            {weatherIcon}
+                          </span>
+                        ) : null}
+                      </span>
                       <span className="agenda-day__events">
                         {visibleItems.map((item) => (
                           <span key={item.id} className="agenda-event-pill">
@@ -401,17 +463,36 @@ export function AgendaApp({
 
         <aside
           ref={sidebarRef}
-          className={`agenda-sidebar${isDraggingRef.current ? ' agenda-sidebar--resizing' : ''}`}
+          className={`agenda-sidebar${isDraggingSidebar ? ' agenda-sidebar--resizing' : ''}`}
           aria-label="Day details"
           onPointerMove={handleResizePointerMove}
           onPointerUp={handleResizePointerUp}
+          onPointerCancel={handleResizePointerCancel}
         >
           <section
             className="agenda-sidebar__selected"
             aria-label="Selected day"
             style={{ flex: `0 0 ${selectedPanelRatio * 100}%` }}
           >
-            <h2>{formatSidebarHeading(selectedDate)}</h2>
+            <div className="agenda-sidebar__selected-header">
+              <h2>{formatSidebarHeading(selectedDate)}</h2>
+              {selectedWeather ? (
+                <div className="agenda-sidebar__weather" aria-label="Weather details">
+                  <p className="agenda-sidebar__weather-temperature">{selectedWeather.temperatureDisplay}</p>
+                  <p className="agenda-sidebar__weather-detail agenda-sidebar__weather-condition">
+                    {selectedWeatherIcon ? (
+                      <span className="agenda-sidebar__weather-icon" aria-hidden="true">
+                        {selectedWeatherIcon}
+                      </span>
+                    ) : null}
+                    <span>{selectedWeather.conditionLabel}</span>
+                  </p>
+                  <p className="agenda-sidebar__weather-detail">
+                    Precipitation {selectedWeather.precipitationChance}%
+                  </p>
+                </div>
+              ) : null}
+            </div>
             {selectedItems.length === 0 ? (
               <div className="agenda-empty-state">No data</div>
             ) : (
@@ -459,7 +540,12 @@ export function AgendaApp({
             role="separator"
             aria-orientation="horizontal"
             aria-label="Resize sidebar sections"
+            aria-valuemin={MIN_SELECTED_PANEL_RATIO * 100}
+            aria-valuemax={MAX_SELECTED_PANEL_RATIO * 100}
+            aria-valuenow={Math.round(selectedPanelRatio * 100)}
+            tabIndex={0}
             onPointerDown={handleResizePointerDown}
+            onKeyDown={handleResizeKeyDown}
           >
             <span className="agenda-sidebar__resize-grip" aria-hidden="true" />
           </div>
