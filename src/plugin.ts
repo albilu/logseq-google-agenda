@@ -384,7 +384,7 @@ export async function bootPlugin({ onOpen, onRefresh, onSettingsChanged, onTasks
     const openCommandLabel = t('command.openAgenda');
     const refreshCommandLabel = t('command.refreshAgenda');
 
-    logseq.useSettingsSchema(getSettingsSchema(locale));
+    logseq.useSettingsSchema([...getSettingsSchema(locale)]);
     logseq.setMainUIInlineStyle({
       zIndex: 9999,
       position: 'fixed',

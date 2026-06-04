@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, waitFor } from '@testing-library/react';
 
+import type { AppUserConfigs } from '@logseq/libs/dist/LSPlugin';
 import type { Snapshot } from './sync/cache';
 
 type AgendaAppProps = {
@@ -76,6 +77,22 @@ function createSnapshot(overrides: Partial<Snapshot> = {}): Snapshot {
   };
 }
 
+function createUserConfigs(overrides: Partial<AppUserConfigs> = {}): AppUserConfigs {
+  return {
+    preferredThemeMode: 'light',
+    preferredFormat: 'markdown',
+    preferredDateFormat: 'yyyy-MM-dd',
+    preferredStartOfWeek: 'Monday',
+    preferredLanguage: 'en-US',
+    preferredWorkflow: 'now',
+    currentGraph: 'test-graph',
+    showBracket: false,
+    enabledFlashcards: false,
+    enabledJournals: true,
+    ...overrides,
+  };
+}
+
 function createDeferredPromise<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason?: unknown) => void;
@@ -115,7 +132,7 @@ beforeEach(() => {
   vi.stubGlobal('logseq', {
     hideMainUI: vi.fn(),
     App: {
-      getUserConfigs: vi.fn(async () => ({ preferredDateFormat: 'yyyy-MM-dd' })),
+      getUserConfigs: vi.fn(async () => createUserConfigs()),
     },
     Editor: {
       getPage: vi.fn(async () => null),
@@ -193,10 +210,7 @@ describe('main wiring', () => {
 
   it('passes Logseq preferredLanguage through to AgendaApp locale on initial load', async () => {
     createSerializedRefresh.mockReturnValue(vi.fn());
-    vi.mocked(logseq.App.getUserConfigs).mockResolvedValue({
-      preferredDateFormat: 'yyyy-MM-dd',
-      preferredLanguage: 'fr-FR',
-    });
+    vi.mocked(logseq.App.getUserConfigs).mockResolvedValue(createUserConfigs({ preferredLanguage: 'fr-FR' }));
 
     await loadMain();
 
@@ -205,19 +219,13 @@ describe('main wiring', () => {
 
   it('keeps the current locale through settings changes and refreshes it only when the panel open callback runs', async () => {
     createSerializedRefresh.mockReturnValue(vi.fn());
-    vi.mocked(logseq.App.getUserConfigs).mockResolvedValue({
-      preferredDateFormat: 'yyyy-MM-dd',
-      preferredLanguage: 'fr-FR',
-    });
+    vi.mocked(logseq.App.getUserConfigs).mockResolvedValue(createUserConfigs({ preferredLanguage: 'fr-FR' }));
 
     await loadMain();
 
     expect(latestAgendaAppProps?.locale).toBe('fr-FR');
 
-    vi.mocked(logseq.App.getUserConfigs).mockResolvedValue({
-      preferredDateFormat: 'yyyy-MM-dd',
-      preferredLanguage: 'de-DE',
-    });
+    vi.mocked(logseq.App.getUserConfigs).mockResolvedValue(createUserConfigs({ preferredLanguage: 'de-DE' }));
 
     const bootOptions = bootPlugin.mock.calls[0][0] as {
       onSettingsChanged?: unknown;

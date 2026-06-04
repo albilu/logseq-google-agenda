@@ -3,19 +3,19 @@ function getNavigatorLocale() {
 }
 
 export async function getLogseqLocale() {
-  const app = (globalThis as {
-    logseq?: {
-      App?: {
-        getUserConfigs?: () => Promise<{ preferredLanguage?: string | null }>;
-      };
-    };
-  }).logseq?.App;
-
-  if (!app || typeof app.getUserConfigs !== 'function') {
-    return getNavigatorLocale();
-  }
-
   try {
+    const app = (globalThis as {
+      logseq?: {
+        App?: {
+          getUserConfigs?: () => Promise<{ preferredLanguage?: string | null }>;
+        };
+      };
+    }).logseq?.App;
+
+    if (!app || typeof app.getUserConfigs !== 'function') {
+      return getNavigatorLocale();
+    }
+
     const userConfigs = await app.getUserConfigs();
     const preferredLanguage = userConfigs?.preferredLanguage?.trim();
 

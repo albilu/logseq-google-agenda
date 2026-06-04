@@ -1,3 +1,5 @@
+/// <reference types="node" />
+
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fireEvent, render, screen, within } from '@testing-library/react';
@@ -195,7 +197,7 @@ describe('AgendaApp', () => {
   });
 
   it('keeps the month-grid weather badge footprint while only enlarging the glyph', () => {
-    const styles = readFileSync(resolve(__dirname, '../styles.css'), 'utf8');
+    const styles = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8');
     const weatherIconRuleMatch = styles.match(/\.agenda-day__weather-icon\s*\{([\s\S]*?)\}/);
 
     expect(weatherIconRuleMatch).not.toBeNull();

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { AppUserConfigs } from '@logseq/libs/dist/LSPlugin';
 import type { AgendaTask } from './calendar/types';
 import type { Snapshot } from './sync/cache';
 import { SETTINGS_SCHEMA, getSettingsSchema } from './logseq/settings';
@@ -15,6 +16,8 @@ type StorageLike = {
   setItem(key: string, value: string): void;
 };
 
+type IntervalHandle = ReturnType<typeof setInterval>;
+
 type LogseqMock = {
   ready: ReturnType<typeof vi.fn>;
   useSettingsSchema: ReturnType<typeof vi.fn>;
@@ -24,6 +27,7 @@ type LogseqMock = {
   onSettingsChanged: ReturnType<typeof vi.fn>;
   settings: Record<string, unknown>;
   App: {
+    getUserConfigs?: ReturnType<typeof vi.fn>;
     registerCommandPalette: ReturnType<typeof vi.fn>;
     registerCommandShortcut: ReturnType<typeof vi.fn>;
   };
@@ -40,6 +44,22 @@ function createSnapshot(overrides: Partial<Snapshot> = {}): Snapshot {
     weatherLocation: overrides.weatherLocation ?? null,
     errors: overrides.errors ?? [],
     syncedAt: overrides.syncedAt ?? '2026-04-10T12:00:00.000Z',
+  };
+}
+
+function createUserConfigs(overrides: Partial<AppUserConfigs> = {}): AppUserConfigs {
+  return {
+    preferredThemeMode: 'light',
+    preferredFormat: 'markdown',
+    preferredDateFormat: 'yyyy-MM-dd',
+    preferredStartOfWeek: 'Monday',
+    preferredLanguage: 'en-US',
+    preferredWorkflow: 'now',
+    currentGraph: 'test-graph',
+    showBracket: false,
+    enabledFlashcards: false,
+    enabledJournals: true,
+    ...overrides,
   };
 }
 
@@ -744,9 +764,9 @@ describe('createSerializedRefresh', () => {
 describe('startRefreshLoop', () => {
   it('schedules refreshes using the parsed settings interval and returns a cleanup function', () => {
     const onRefresh = vi.fn();
-    const intervalHandle = 42;
-    const setIntervalImpl = vi.fn<(handler: () => void, timeout: number) => number>(() => intervalHandle);
-    const clearIntervalImpl = vi.fn<(handle: number) => void>();
+    const intervalHandle = Symbol('refresh-loop') as unknown as IntervalHandle;
+    const setIntervalImpl = vi.fn<(handler: () => void, timeout: number) => IntervalHandle>(() => intervalHandle);
+    const clearIntervalImpl = vi.fn<(handle: IntervalHandle) => void>();
 
     const stop = startRefreshLoop(onRefresh, {
       settings: {
@@ -772,9 +792,9 @@ describe('startWeatherRefreshLoop', () => {
   it('schedules weather refreshes using the weather interval and returns a cleanup function', async () => {
     const { startWeatherRefreshLoop } = await import('./plugin');
     const onRefresh = vi.fn();
-    const intervalHandle = 42;
-    const setIntervalImpl = vi.fn<(handler: () => void, timeout: number) => number>(() => intervalHandle);
-    const clearIntervalImpl = vi.fn<(handle: number) => void>();
+    const intervalHandle = Symbol('weather-refresh-loop') as unknown as IntervalHandle;
+    const setIntervalImpl = vi.fn<(handler: () => void, timeout: number) => IntervalHandle>(() => intervalHandle);
+    const clearIntervalImpl = vi.fn<(handle: IntervalHandle) => void>();
 
     const stop = startWeatherRefreshLoop(onRefresh, {
       settings: {
@@ -800,8 +820,8 @@ describe('startWeatherRefreshLoop', () => {
   it('does not schedule weather refreshes when weatherCity is blank', async () => {
     const { startWeatherRefreshLoop } = await import('./plugin');
     const onRefresh = vi.fn();
-    const setIntervalImpl = vi.fn<(handler: () => void, timeout: number) => number>();
-    const clearIntervalImpl = vi.fn<(handle: number) => void>();
+    const setIntervalImpl = vi.fn<(handler: () => void, timeout: number) => IntervalHandle>();
+    const clearIntervalImpl = vi.fn<(handle: IntervalHandle) => void>();
 
     const stop = startWeatherRefreshLoop(onRefresh, {
       settings: {
@@ -1135,7 +1155,7 @@ describe('bootPlugin', () => {
 
     vi.stubGlobal('logseq', logseqMock);
     vi.stubGlobal('navigator', { language: 'en-US' });
-    logseqMock.App.getUserConfigs = vi.fn(async () => ({ preferredLanguage: 'fr-FR' }));
+    logseqMock.App.getUserConfigs = vi.fn(async () => createUserConfigs({ preferredLanguage: 'fr-FR' }));
 
     await bootPlugin();
 
