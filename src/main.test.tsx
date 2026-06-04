@@ -14,6 +14,7 @@ type AgendaAppProps = {
 
 const bootPlugin = vi.fn();
 const createDebouncedCallback = vi.fn();
+const createLogseqFetch = vi.fn(() => vi.fn());
 const createSerializedRefresh = vi.fn();
 const getInitialSnapshot = vi.fn();
 const refreshSnapshot = vi.fn();
@@ -38,6 +39,7 @@ vi.mock('./plugin', () => ({
   bootPlugin: (...args: Parameters<typeof bootPlugin>) => bootPlugin(...args),
   createDebouncedCallback: (...args: Parameters<typeof createDebouncedCallback>) =>
     createDebouncedCallback(...args),
+  createLogseqFetch: (...args: Parameters<typeof createLogseqFetch>) => createLogseqFetch(...args),
   createSerializedRefresh: (...args: Parameters<typeof createSerializedRefresh>) =>
     createSerializedRefresh(...args),
   getInitialSnapshot: (...args: Parameters<typeof getInitialSnapshot>) => getInitialSnapshot(...args),

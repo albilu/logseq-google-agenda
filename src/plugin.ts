@@ -485,4 +485,26 @@ export async function bootPlugin({ onOpen, onRefresh, onSettingsChanged, onTasks
   };
 }
 
+/**
+ * Returns a fetch-compatible implementation that routes requests through
+ * Logseq's IPC bridge (Electron main process), bypassing browser CORS
+ * restrictions that block direct fetches from the lsp://logseq.io origin.
+ */
+export function createLogseqFetch(): typeof fetch {
+  return async (url: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
+    const urlStr =
+      typeof url === 'string' ? url :
+      url instanceof URL ? url.href :
+      (url as Request).url;
+
+    const text = (await logseq.Request._request({
+      url: urlStr,
+      method: 'GET',
+      returnType: 'text',
+    })) as string;
+
+    return new Response(text, { status: 200 });
+  };
+}
+
 export { syncEventsToJournals };

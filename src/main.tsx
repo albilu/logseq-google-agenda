@@ -7,6 +7,7 @@ import type { Snapshot } from './sync/cache';
 import {
   bootPlugin,
   createDebouncedCallback,
+  createLogseqFetch,
   createSerializedRefresh,
   getInitialSnapshot,
   refreshSnapshot,
@@ -86,7 +87,7 @@ function AgendaPluginRoot() {
 
   const [handleRefresh] = useState(() =>
     createSerializedRefresh(
-      () => refreshSnapshot(),
+      () => refreshSnapshot({ fetchImpl: createLogseqFetch() }),
       {
         onSnapshot: setSnapshot,
         onError: (error) => {
