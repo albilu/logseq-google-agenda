@@ -142,6 +142,7 @@ beforeEach(() => {
 
   bootPlugin.mockReset();
   createDebouncedCallback.mockReset();
+  createLogseqFetch.mockReset();
   createSerializedRefresh.mockReset();
   getInitialSnapshot.mockReset();
   refreshSnapshot.mockReset();
@@ -156,6 +157,7 @@ beforeEach(() => {
   bootPlugin.mockResolvedValue(vi.fn());
   startRefreshLoop.mockReturnValue(vi.fn());
   startWeatherRefreshLoop.mockReturnValue(vi.fn());
+  createLogseqFetch.mockReturnValue(vi.fn());
   createDebouncedCallback.mockImplementation((fn: () => void) => fn);
 });
 
@@ -440,10 +442,12 @@ describe('main wiring', () => {
     const stopAgendaLoopAfterSettings = vi.fn();
     const stopWeatherLoop = vi.fn();
     const stopWeatherLoopAfterSettings = vi.fn();
+    const weatherFetch = vi.fn();
 
     getInitialSnapshot.mockReturnValue(startupSnapshot);
     refreshSnapshot.mockResolvedValue(refreshedSnapshot);
     refreshWeatherOnly.mockResolvedValue(weatherSnapshot);
+    createLogseqFetch.mockReturnValue(weatherFetch);
     createSerializedRefresh.mockImplementation((refresh: () => Promise<Snapshot>, options?: {
       onSnapshot?: (snapshot: Snapshot) => void;
       onError?: (error: unknown) => void;
@@ -475,7 +479,10 @@ describe('main wiring', () => {
       await weatherRefresh();
     });
 
-    expect(refreshWeatherOnly).toHaveBeenCalledWith({ currentSnapshot: refreshedSnapshot });
+    expect(refreshWeatherOnly).toHaveBeenCalledWith({
+      currentSnapshot: refreshedSnapshot,
+      fetchImpl: weatherFetch,
+    });
     expect(latestAgendaAppProps?.snapshot).toEqual(weatherSnapshot);
 
     await act(async () => {
@@ -586,8 +593,10 @@ describe('main wiring', () => {
       syncedAt: '2026-04-10T12:06:00.000Z',
     });
     const weatherDeferred = createDeferredPromise<Snapshot>();
+    const weatherFetch = vi.fn();
 
     getInitialSnapshot.mockReturnValue(startupSnapshot);
+    createLogseqFetch.mockReturnValue(weatherFetch);
     refreshSnapshot
       .mockResolvedValueOnce(startupSnapshot)
       .mockResolvedValueOnce(latestFullSnapshot);
@@ -619,7 +628,10 @@ describe('main wiring', () => {
       void weatherRefresh();
     });
 
-    expect(refreshWeatherOnly).toHaveBeenCalledWith({ currentSnapshot: startupSnapshot });
+    expect(refreshWeatherOnly).toHaveBeenCalledWith({
+      currentSnapshot: startupSnapshot,
+      fetchImpl: weatherFetch,
+    });
 
     await act(async () => {
       await latestAgendaAppProps?.onRefresh?.();

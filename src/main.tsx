@@ -99,7 +99,10 @@ function AgendaPluginRoot() {
 
   const [handleWeatherRefresh] = useState(() =>
     createSerializedRefresh(
-      () => refreshWeatherOnly({ currentSnapshot: snapshotRef.current }),
+      () => refreshWeatherOnly({
+        currentSnapshot: snapshotRef.current,
+        fetchImpl: createLogseqFetch(),
+      }),
       {
         onSnapshot: (weatherSnapshot) => {
           setSnapshot((currentSnapshot) => mergeWeatherSnapshot(currentSnapshot, weatherSnapshot));
