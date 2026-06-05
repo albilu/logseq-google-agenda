@@ -481,7 +481,6 @@ describe('main wiring', () => {
 
     expect(refreshWeatherOnly).toHaveBeenCalledWith({
       currentSnapshot: refreshedSnapshot,
-      fetchImpl: weatherFetch,
     });
     expect(latestAgendaAppProps?.snapshot).toEqual(weatherSnapshot);
 
@@ -630,7 +629,6 @@ describe('main wiring', () => {
 
     expect(refreshWeatherOnly).toHaveBeenCalledWith({
       currentSnapshot: startupSnapshot,
-      fetchImpl: weatherFetch,
     });
 
     await act(async () => {

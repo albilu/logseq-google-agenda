@@ -111,7 +111,7 @@ function shouldReportWeatherError(reportError: (message: string, error: unknown)
 
 async function loadWeather(
   city: string,
-  fetchImpl: typeof fetch | undefined,
+  _fetchImpl: typeof fetch | undefined,
   reportError: (message: string, error: unknown) => void,
   fallback: Pick<Snapshot, 'weather' | 'weatherLocation'> = {
     weather: [],
@@ -130,9 +130,12 @@ async function loadWeather(
 
   try {
     const locale = await getLogseqLocale();
+    // Always use native fetch for weather requests.  The Open-Meteo APIs
+    // serve `Access-Control-Allow-Origin: *`, so CORS is not a problem.
+    // Routing through the Logseq IPC bridge (createLogseqFetch) causes
+    // DOMExceptions when the bridge is unavailable.
     const result = await refreshWeather({
       city,
-      fetchImpl,
       locale,
     });
 

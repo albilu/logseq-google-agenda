@@ -211,6 +211,8 @@ describe('refreshSnapshot', () => {
 
     expect(refreshWeather).toHaveBeenCalledWith(expect.objectContaining({
       city: 'Paris',
+    }));
+    expect(refreshWeather).toHaveBeenCalledWith(expect.not.objectContaining({
       fetchImpl,
     }));
     expect(snapshot.weather).toEqual([

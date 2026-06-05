@@ -121,7 +121,6 @@ function AgendaPluginRoot() {
     createSerializedRefresh(
       () => refreshWeatherOnly({
         currentSnapshot: snapshotRef.current,
-        fetchImpl: createLogseqFetch(),
       }),
       {
         onSnapshot: (weatherSnapshot) => {
