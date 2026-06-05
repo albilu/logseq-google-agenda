@@ -489,6 +489,10 @@ export async function bootPlugin({ onOpen, onRefresh, onSettingsChanged, onTasks
  * Returns a fetch-compatible implementation that routes requests through
  * Logseq's IPC bridge (Electron main process), bypassing browser CORS
  * restrictions that block direct fetches from the lsp://logseq.io origin.
+ *
+ * When the IPC bridge is unavailable (e.g. cross-origin frame blocked), the
+ * implementation throws a TypeError similar to native fetch network failures
+ * so callers can handle it uniformly.
  */
 export function createLogseqFetch(): typeof fetch {
   return async (url: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
@@ -497,11 +501,23 @@ export function createLogseqFetch(): typeof fetch {
       url instanceof URL ? url.href :
       (url as Request).url;
 
-    const text = (await logseq.Request._request({
-      url: urlStr,
-      method: 'GET',
-      returnType: 'text',
-    })) as string;
+    let text: string;
+
+    try {
+      text = (await logseq.Request._request({
+        url: urlStr,
+        method: 'GET',
+        returnType: 'text',
+      })) as string;
+    } catch (error) {
+      if (error instanceof DOMException) {
+        throw new TypeError(
+          `Logseq IPC bridge unavailable (${error.message}). Request to ${urlStr} could not be dispatched.`,
+        );
+      }
+
+      throw error;
+    }
 
     return new Response(text, { status: 200 });
   };

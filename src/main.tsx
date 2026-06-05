@@ -19,6 +19,26 @@ import {
 } from './plugin';
 import './styles.css';
 
+/**
+ * Suppress unhandled promise rejections caused by the Logseq SDK's internal
+ * deferred-timeout mechanism.  When `logseq.Request._request()` fails (e.g. a
+ * DOMException from cross-origin frame access), the SDK's internal timer still
+ * fires later and rejects a promise that no caller holds.  Without this handler
+ * the rejection surfaces as a noisy console error even though the plugin already
+ * handled the original failure gracefully.
+ */
+window.addEventListener('unhandledrejection', (event: PromiseRejectionEvent) => {
+  const reason = event.reason;
+  const isDeferredTimeout =
+    reason instanceof Error && reason.message.includes('[deferred timeout]');
+  const isDomException = reason instanceof DOMException;
+
+  if (isDeferredTimeout || isDomException) {
+    event.preventDefault();
+    console.debug('[logseq-google-agenda] Suppressed SDK rejection:', reason?.message ?? reason);
+  }
+});
+
 function mergeWeatherSnapshot(currentSnapshot: Snapshot | null, weatherSnapshot: Snapshot): Snapshot {
   return {
     events: currentSnapshot?.events ?? weatherSnapshot.events,
