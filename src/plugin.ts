@@ -489,13 +489,62 @@ export async function bootPlugin({ onOpen, onRefresh, onSettingsChanged, onTasks
 }
 
 /**
- * Returns a fetch-compatible implementation that routes requests through
- * Logseq's IPC bridge (Electron main process), bypassing browser CORS
- * restrictions that block direct fetches from the lsp://logseq.io origin.
+ * Dispatches an HTTP GET request through the safe postMessage IPC channel.
  *
- * When the IPC bridge is unavailable (e.g. cross-origin frame blocked), the
- * implementation throws a TypeError similar to native fetch network failures
- * so callers can handle it uniformly.
+ * The standard {@link logseq.Request._request} method uses
+ * `Experiments.invokeExperMethod()` which accesses `window.top` directly,
+ * causing a DOMException in cross-origin iframe plugins.  This function
+ * replicates the same request flow using the postMessage channel that all
+ * other SDK methods rely on:
+ *
+ * 1. Sends `exper_request` via `caller.callAsync("api:call", …)` to obtain
+ *    a request ID from the host.
+ * 2. Waits for the HTTP response via the SDK's `#lsp#request#callback`
+ *    event, which `logseq.Request` re-emits per request ID.
+ */
+const REQUEST_TIMEOUT_MS = 30_000;
+
+async function fetchViaPostMessage(urlStr: string): Promise<string> {
+  const pluginId = logseq.baseInfo.id;
+
+  const requestId = (await logseq.caller.callAsync('api:call', {
+    method: 'exper_request',
+    args: [pluginId, { url: urlStr, method: 'GET', returnType: 'text' }],
+  })) as string | number | undefined;
+
+  if (!requestId) {
+    throw new TypeError(`Logseq host did not return a request ID for ${urlStr}`);
+  }
+
+  return new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new TypeError(`Request to ${urlStr} timed out after ${REQUEST_TIMEOUT_MS}ms`));
+    }, REQUEST_TIMEOUT_MS);
+
+    logseq.Request.once(`task_callback_${requestId}`, (result: unknown) => {
+      clearTimeout(timer);
+
+      if (result instanceof Error) {
+        reject(result);
+      } else {
+        resolve(result as string);
+      }
+    });
+  });
+}
+
+/**
+ * Returns a fetch-compatible implementation that routes requests through
+ * Logseq's host process, bypassing browser CORS restrictions that block
+ * direct fetches from the lsp://logseq.io origin.
+ *
+ * Uses the postMessage IPC channel (`caller.callAsync`) instead of
+ * `logseq.Request._request()`, which accesses `window.top` directly and
+ * fails with a DOMException in cross-origin iframe plugins.
+ *
+ * Falls back to `logseq.Request._request()` if the postMessage path is
+ * unavailable (e.g. older Logseq versions that do not expose
+ * `exper_request` via `api:call`).
  */
 export function createLogseqFetch(): typeof fetch {
   return async (url: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
@@ -507,19 +556,16 @@ export function createLogseqFetch(): typeof fetch {
     let text: string;
 
     try {
+      text = await fetchViaPostMessage(urlStr);
+    } catch {
+      // Fallback: try the legacy SDK method which uses window.top access.
+      // This still works when the plugin runs in shadow-mode or when
+      // window.top is same-origin (e.g. some desktop Logseq builds).
       text = (await logseq.Request._request({
         url: urlStr,
         method: 'GET',
         returnType: 'text',
       })) as string;
-    } catch (error) {
-      if (error instanceof DOMException) {
-        throw new TypeError(
-          `Logseq IPC bridge unavailable (${error.message}). Request to ${urlStr} could not be dispatched.`,
-        );
-      }
-
-      throw error;
     }
 
     return new Response(text, { status: 200 });
